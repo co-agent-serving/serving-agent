@@ -25,6 +25,8 @@
 15. [Implementation Phases](#15-implementation-phases)
 16. [Performance Targets](#16-performance-targets)
 17. [Mapping to Linqu Hierarchy — Structural, Not Tabular](#17-mapping-to-linqu-hierarchy--structural-not-tabular)
+18. [Meta Index Durability and Cost at TB-Scale](#18-meta-index-durability-and-cost-at-tb-scale)
+19. [Layer-Wise KVCache Management and Compute-IO Overlap](#19-layer-wise-kvcache-management-and-compute-io-overlap)
 
 ---
 
@@ -2049,6 +2051,869 @@ v7's §18 was a table: "this component maps to that level." v8 makes the mapping
 
 ---
 
+## 18. Meta Index Durability and Cost at TB-Scale
+
+### 18.1 The Problem: Recomputation Is Not Free at TB Scale
+
+v7 and v8 §9.2 assume KVCache blocks are "recomputable caches" — if a host fails, its blocks are lost and will be recomputed on demand. This assumption holds when KVCache is measured in tens of GB. At **several TB** of KVCache (e.g., 64 hosts × 128 GB CXL per host = 8 TB total), recomputation becomes prohibitively expensive:
+
+| Scenario | Recompute Cost |
+|---|---|
+| Single host loss (128 GB KV) | ~50–200B tokens × forward pass cost. At 100K tok/s, this is **minutes to hours** of recomputation while serving capacity is degraded. |
+| CXL switch failure (1 TB KV, 8 hosts) | Cannot serve requests that depend on those cached prefixes. Cold-start penalty across the entire switch domain. |
+| Allocator primary failover | The meta index (which block is where) must survive — without it, TB of KV blocks in CXL memory become unreachable orphans. |
+
+**The meta index — the mapping from `BlockHash` to `BlockHandle` (level + address) — is no longer a soft-state cache. It is a critical data structure whose loss causes TB-scale recomputation.**
+
+### 18.2 Current Meta Index Architecture and Its Gaps
+
+The current meta index is distributed across:
+
+| Component | What It Stores | Durability |
+|---|---|---|
+| `LocalBlockIndex` (per host, L3) | `HashMap<BlockHash, GlobalBlockAddr>` | **Volatile** — in-process DRAM. Lost on process restart. |
+| `LevelGossip` summaries (L3–L5) | Block hash lists or bloom filters per node | **Volatile** — in-memory, rebuilt from gossip. |
+| `CxlMemoryManager` allocation bitmap (L4) | Which CXL blocks are allocated/free/quarantined | **Volatile** — in-process DRAM on the allocator primary. Standby has a replica, but both are in-memory. |
+| Radix tree in `RadixKvManager` (L2) | Token-prefix → GPU block mapping | **Volatile** — GPU-local, always recomputable from KV data. |
+
+**Gap 1: No persistence.** A host restart loses all index state. The KV data in CXL memory survives (CXL memory is persistent across process restarts if the memory region is not freed), but the index to find it is gone.
+
+**Gap 2: Gossip doesn't scale to millions of entries.** `LevelSummary::block_hashes` carries full hash lists. At 32 bytes per hash × 1M blocks per host = 32 MB per gossip round. Even with bloom filters, this is excessive at 1ms gossip intervals.
+
+**Gap 3: No incremental rebuild.** If the meta index is lost, there is no way to reconstruct it from the KV data in CXL memory without scanning all blocks and re-hashing.
+
+### 18.3 Design: Tiered Meta Index with Persistence and Incremental Gossip
+
+#### 18.3.1 Meta Index Tiers
+
+The meta index itself follows the hierarchy. At each level, the index has different granularity and durability:
+
+```
+Index Tier    Granularity              Durability           Purpose
+─────────────────────────────────────────────────────────────────────────
+L2 Index      Exact: hash → GPU block  Volatile (OK)        GPU blocks are fast to refill
+L3 Index      Exact: hash → CXL addr   Persistent (WAL)     CXL data survives restart
+L4 Summary    Bloom filter per host    Replicated (gossip)  Route to correct host
+L5 Summary    Bloom filter per switch  Replicated (gossip)  Route to correct switch
+L6 Index      Exact: hash → remote key Durable (remote DB)  Already persistent
+```
+
+**Key insight:** Only L3 needs new persistence — L2 is cheap to rebuild (GPU), L6 is already persistent (remote store), and L4/L5 summaries are rebuilt from L3 via gossip.
+
+#### 18.3.2 L3 Index Persistence: Write-Ahead Log (WAL)
+
+Add a lightweight WAL to `LocalBlockIndex` that journals index mutations to local SSD/NVMe:
+
+```rust
+/// Persistent meta index for L3 (Host) block store.
+/// Journals all insert/remove operations to a WAL on local NVMe.
+/// On restart, replays the WAL to reconstruct the in-memory index.
+pub struct PersistentBlockIndex {
+    /// In-memory index (same as v7 LocalBlockIndex).
+    inner: LocalBlockIndex,
+    /// WAL for persistence. Append-only, periodically compacted.
+    wal: IndexWal,
+}
+
+/// WAL entry types.
+#[derive(Serialize, Deserialize)]
+enum WalEntry {
+    Insert { hash: BlockHash, addr: GlobalBlockAddr, ref_count: u32 },
+    Remove { hash: BlockHash },
+    /// Periodic checkpoint: full index snapshot.
+    /// After a checkpoint, all prior WAL entries can be discarded.
+    Checkpoint { entries: Vec<(BlockHash, GlobalBlockAddr, u32)> },
+}
+
+/// Write-ahead log backed by local NVMe.
+pub struct IndexWal {
+    /// Memory-mapped WAL file.
+    file: std::fs::File,
+    /// Current write position.
+    write_pos: u64,
+    /// Checkpoint interval (e.g., every 100K mutations or every 60s).
+    checkpoint_interval: u64,
+    /// Mutations since last checkpoint.
+    mutations_since_checkpoint: u64,
+}
+
+impl IndexWal {
+    /// Append an entry to the WAL. Fsync is batched (group commit).
+    pub fn append(&mut self, entry: &WalEntry) {
+        let bytes = bincode::serialize(entry).unwrap();
+        let len = bytes.len() as u32;
+        // Write: [len: u32][entry bytes][crc32: u32]
+        self.file.write_all(&len.to_le_bytes()).unwrap();
+        self.file.write_all(&bytes).unwrap();
+        let crc = crc32fast::hash(&bytes);
+        self.file.write_all(&crc.to_le_bytes()).unwrap();
+        self.write_pos += 4 + bytes.len() as u64 + 4;
+        self.mutations_since_checkpoint += 1;
+    }
+
+    /// Replay WAL to reconstruct the in-memory index.
+    pub fn replay(&self) -> HashMap<BlockHash, (GlobalBlockAddr, u32)> {
+        let mut index = HashMap::new();
+        // Read entries from the WAL, applying inserts/removes in order.
+        // Start from the last checkpoint if present.
+        for entry in self.iter_from_last_checkpoint() {
+            match entry {
+                WalEntry::Insert { hash, addr, ref_count } => {
+                    index.insert(hash, (addr, ref_count));
+                }
+                WalEntry::Remove { hash } => {
+                    index.remove(&hash);
+                }
+                WalEntry::Checkpoint { entries } => {
+                    index.clear();
+                    for (hash, addr, rc) in entries {
+                        index.insert(hash, (addr, rc));
+                    }
+                }
+            }
+        }
+        index
+    }
+
+    /// Write a checkpoint (full snapshot) and truncate prior entries.
+    pub fn checkpoint(&mut self, index: &HashMap<BlockHash, (GlobalBlockAddr, u32)>) {
+        let entries: Vec<_> = index.iter()
+            .map(|(h, (a, r))| (*h, *a, *r))
+            .collect();
+        self.append(&WalEntry::Checkpoint { entries });
+        // Truncate everything before the checkpoint.
+        self.truncate_before_last_checkpoint();
+        self.mutations_since_checkpoint = 0;
+    }
+}
+```
+
+**WAL cost analysis:**
+
+| Parameter | Value | Notes |
+|---|---|---|
+| WAL entry size | ~44 bytes (hash 32B + addr 8B + crc 4B) | Compact binary encoding |
+| Insert rate | ~10K–100K blocks/sec (during active prefill) | Worst case: 100K new blocks/sec |
+| WAL throughput | ~4.4 MB/s at 100K inserts/sec | Any NVMe can handle this |
+| Checkpoint interval | Every 60s or 100K mutations | Keeps replay time < 1s |
+| Checkpoint size | ~44 bytes × 1M blocks = 44 MB | One full index snapshot |
+| Replay time on restart | < 1s for 1M blocks | Read 44 MB from NVMe |
+
+**Integration with `HostBlockStore`:**
+
+```rust
+impl BlockStore for HostBlockStore {
+    fn store(&self, blocks: &[KvBlockData]) -> Vec<Result<BlockHandle, BlockError>> {
+        // ... existing allocation and CXL write logic ...
+
+        // Journal the insert to WAL for persistence.
+        for (block, handle) in blocks.iter().zip(handles.iter()) {
+            if let Ok(h) = handle {
+                self.persistent_index.wal.append(&WalEntry::Insert {
+                    hash: block.meta.hash,
+                    addr: GlobalBlockAddr::decode(h.addr),
+                    ref_count: 1,
+                });
+            }
+        }
+
+        // ... return results ...
+    }
+
+    fn remove(&self, hashes: &[BlockHash]) {
+        // ... existing remove logic ...
+
+        // Journal the remove to WAL.
+        for h in hashes {
+            self.persistent_index.wal.append(&WalEntry::Remove { hash: *h });
+        }
+    }
+}
+```
+
+**Startup sequence with WAL:**
+
+```
+1. Map CXL memory regions (v6, unchanged).
+2. Replay WAL → reconstruct in-memory LocalBlockIndex.
+3. Validate: for each index entry, verify the CXL block's hash header
+   matches the index entry (detect stale entries from unclean shutdown).
+4. Remove stale entries (CXL block was overwritten or corrupted).
+5. Resume normal operation. Gossip will propagate the recovered index.
+```
+
+#### 18.3.3 Scalable Gossip: Bloom Filters + Incremental Deltas
+
+Replace `LevelSummary::block_hashes: Vec<BlockHash>` with a two-tier approach:
+
+```rust
+/// Scalable summary for hierarchical gossip.
+/// Replaces the full hash list in LevelSummary.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ScalableSummary {
+    pub level: HierarchyLevel,
+    pub node_id: u32,
+    /// Bloom filter covering all blocks at this level.
+    /// Size: ~1 MB for 1M blocks at 1% FPR.
+    /// Used for routing decisions (probabilistic "does this node have block X?").
+    pub bloom: BloomFilter,
+    /// Total blocks stored.
+    pub block_count: u32,
+    /// Free capacity.
+    pub free_blocks: u32,
+    /// Monotonic version number. Incremented on every mutation.
+    pub version: u64,
+    /// Incremental delta since last gossip round.
+    /// Contains only the hashes added/removed since `prev_version`.
+    pub delta: Option<IndexDelta>,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct IndexDelta {
+    pub prev_version: u64,
+    pub added: Vec<BlockHash>,
+    pub removed: Vec<BlockHash>,
+}
+```
+
+**Gossip bandwidth comparison:**
+
+| Approach | Per-Host Per-Round | 8 Hosts × 10 rounds/sec |
+|---|---|---|
+| v8 current (full hash list, 1M blocks) | 32 MB | 2.56 GB/s — **infeasible** |
+| Bloom filter only (1M blocks, 1% FPR) | 1.2 MB | 96 MB/s — feasible but heavy |
+| Bloom filter + incremental delta (100 changes/round) | ~4 KB delta | 320 KB/s — **practical** |
+
+**How it works:**
+1. Each host maintains a bloom filter covering its blocks. Rebuilt periodically (every checkpoint).
+2. Between rebuilds, gossip sends only the incremental delta (added/removed hashes since last round).
+3. Receivers apply deltas to their local copy of the bloom filter.
+4. The bloom filter is used for routing decisions — false positives cause a cache miss (not correctness failure), and the actual `BlockStore::contains()` check at the target host is exact.
+
+#### 18.3.4 Allocator State Persistence
+
+The `CxlMemoryManager` allocation bitmap should also be persisted:
+
+```rust
+/// Persistent allocator state.
+/// The allocation bitmap is checkpointed to local NVMe periodically.
+pub struct PersistentAllocator {
+    inner: CxlMemoryManager,
+    /// Allocation bitmap checkpoint file.
+    bitmap_path: PathBuf,
+    /// Checkpoint interval.
+    checkpoint_interval: Duration,
+}
+
+impl PersistentAllocator {
+    /// On startup: load bitmap from checkpoint, then reconcile with
+    /// the WAL-recovered meta index to fix any inconsistencies.
+    pub fn recover(bitmap_path: &Path, recovered_index: &HashMap<BlockHash, GlobalBlockAddr>) -> Self {
+        let mut bitmap = Self::load_bitmap(bitmap_path);
+
+        // Mark all blocks referenced by the recovered index as allocated.
+        for (_, addr) in recovered_index {
+            bitmap.mark_allocated(*addr);
+        }
+
+        // Any blocks marked allocated in the bitmap but NOT in the index
+        // are leaked — free them.
+        let leaked = bitmap.find_allocated_but_unreferenced(recovered_index);
+        for addr in leaked {
+            bitmap.free(addr);
+        }
+
+        Self { inner: CxlMemoryManager::from_bitmap(bitmap), .. }
+    }
+}
+```
+
+### 18.4 Cost-Availability Tradeoff Summary
+
+| Protection Level | What You Pay | What You Get | When to Use |
+|---|---|---|---|
+| **None** (v7/v8 current) | 0 | Lose entire KVCache on restart | KVCache < 100 GB, recomputation is cheap |
+| **WAL only** (L3 index persistence) | ~5 MB/s NVMe write, < 1s restart | Survive process restart, recover TB of CXL KVCache | KVCache 100 GB – 1 TB per host |
+| **WAL + allocator checkpoint** | +1 MB periodic checkpoint | Survive process restart with consistent allocation state | Multi-host with centralized allocator |
+| **WAL + replicated index** | +network bandwidth for index replication | Survive host hardware failure (index exists on peer) | KVCache > 1 TB, recomputation cost > 10 min |
+
+### 18.5 Configuration
+
+```yaml
+hierarchy:
+  levels:
+    - level: host
+      meta_index:
+        persistence: wal           # none | wal
+        wal_path: "/var/lib/llm-server/index.wal"
+        checkpoint_interval_secs: 60
+        checkpoint_max_mutations: 100000
+        validate_on_recovery: true  # verify CXL block hashes on startup
+      gossip:
+        summary_mode: bloom_delta   # full_hashes | bloom_delta
+        bloom_fpr: 0.01            # false positive rate
+        bloom_rebuild_interval_secs: 300
+```
+
+### 18.6 Impact on v8 Abstractions
+
+| Abstraction | Change |
+|---|---|
+| `BlockStore` trait | No change — persistence is an implementation detail of `HostBlockStore` |
+| `LevelNode` trait | No change |
+| `LevelSummary` | **Replaced** by `ScalableSummary` with bloom filter + delta |
+| `LevelGossip` | **Modified** to send/receive `ScalableSummary` instead of full hash lists |
+| `LocalBlockIndex` | **Wrapped** by `PersistentBlockIndex` |
+| `CxlMemoryManager` | **Wrapped** by `PersistentAllocator` |
+| New dependency | `crc32fast` (WAL checksums), `bloomfilter` or custom bloom |
+
+---
+
+## 19. Layer-Wise KVCache Management and Compute-IO Overlap
+
+### 19.1 The Problem: Monolithic Blocks Prevent Pipelining
+
+In the current v8 design, a KV block contains **all layers' KV tensors for a token range**:
+
+```
+Current KvBlockData layout:
+┌──────────────────────────────────────────────┐
+│ Block for tokens [0..128], all layers        │
+│ ┌──────────┐┌──────────┐     ┌──────────┐   │
+│ │ Layer 0   ││ Layer 1   │ ... │ Layer 79  │  │
+│ │ K: [h,d]  ││ K: [h,d]  │     │ K: [h,d]  │ │
+│ │ V: [h,d]  ││ V: [h,d]  │     │ V: [h,d]  │ │
+│ └──────────┘└──────────┘     └──────────┘   │
+│ Total: 80 layers × 2 × heads × head_dim     │
+│ = 80 × 2 × 128 × 128 × 2B = ~5 MB/block    │
+└──────────────────────────────────────────────┘
+```
+
+**Problem:** The attention kernel processes layers sequentially — layer 0 first, then layer 1, etc. But the KV block must be fully loaded before any layer can execute. This creates a serial dependency:
+
+```
+Without layer-wise management:
+  Time: ──────────────────────────────────────────→
+  IO:   [===== Load full block (5MB) =====]
+  GPU:                                      [L0][L1][L2]...[L79]
+                                            ↑ GPU idle during load
+```
+
+With layer-wise management, the GPU can start computing attention on layer 0 while layers 1+ are still being loaded:
+
+```
+With layer-wise management:
+  Time: ──────────────────────────────────────────→
+  IO:   [L0][L1][L2][L3]...............[L79]
+  GPU:      [L0][L1][L2][L3]...........[L79]
+            ↑ overlap: GPU computes L0 while IO loads L1
+```
+
+### 19.2 Layer-Aware Block Identity
+
+Extend `BlockHash` and `KvBlockMeta` to include layer information:
+
+```rust
+/// Extended block identity that includes layer range.
+/// A LayerBlockId uniquely identifies KV data for a specific
+/// token prefix AND a specific layer range.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LayerBlockId {
+    /// Hash of the token prefix (same as current BlockHash).
+    pub prefix_hash: BlockHash,
+    /// Layer range [start, end) that this block covers.
+    /// For monolithic blocks: start=0, end=num_layers.
+    /// For per-layer blocks: start=layer_idx, end=layer_idx+1.
+    /// For layer-group blocks: e.g., start=0, end=8 (8 layers per group).
+    pub layer_start: u16,
+    pub layer_end: u16,
+}
+
+impl LayerBlockId {
+    /// Compute a unique hash incorporating both prefix and layer range.
+    pub fn block_hash(&self) -> BlockHash {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&self.prefix_hash);
+        hasher.update(&self.layer_start.to_le_bytes());
+        hasher.update(&self.layer_end.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Is this a monolithic (all-layers) block?
+    pub fn is_monolithic(&self) -> bool {
+        self.layer_start == 0 && self.layer_end == u16::MAX
+    }
+
+    /// Number of layers in this block.
+    pub fn layer_count(&self) -> u16 {
+        self.layer_end - self.layer_start
+    }
+}
+```
+
+### 19.3 Layer Granularity Strategies
+
+The optimal layer granularity depends on the ratio of IO bandwidth to compute throughput:
+
+| Strategy | Block Count per Token Range | Block Size (80-layer model, 128 tokens) | When to Use |
+|---|---|---|---|
+| **Monolithic** (current) | 1 | ~5 MB | GPU-local HBM (L2). No IO overlap needed. |
+| **Per-layer** | 80 | ~64 KB each | CXL load (L3–L5) where fine-grained prefetch matters. |
+| **Layer-group** (e.g., 8 layers) | 10 | ~640 KB each | Balance between prefetch granularity and index overhead. |
+
+**The right granularity varies by hierarchy level:**
+
+```
+L2 (GPU HBM):     Monolithic — already in HBM, no transfer needed.
+L3 (Host DRAM):   Layer-group (4–8 layers) — CXL load latency ~200ns/cacheline,
+                   need enough per-group to amortize index overhead.
+L4–L5 (CXL pool): Layer-group (8–16 layers) — higher latency, larger groups.
+L6 (Remote):      Monolithic — network transfer dominates, prefetch entire block.
+```
+
+### 19.4 Layer-Wise Prefetch Engine
+
+The core mechanism: a **prefetch engine** that works with the attention kernel's layer-by-layer execution to load KVCache layers ahead of compute.
+
+```rust
+/// Layer-wise prefetch engine.
+/// Coordinates KVCache loading from BlockStore with attention kernel execution.
+///
+/// The engine maintains a sliding window of layer groups:
+/// - "computed": layers whose attention has completed
+/// - "ready": layers whose KV data is in GPU HBM, ready for attention
+/// - "in-flight": layers whose KV data is being transferred to GPU HBM
+/// - "pending": layers not yet scheduled for transfer
+pub struct LayerPrefetchEngine {
+    /// Total layers in the model.
+    num_layers: u32,
+    /// Layer group size (how many layers per prefetch unit).
+    group_size: u32,
+    /// Number of layer groups to prefetch ahead of compute.
+    prefetch_depth: u32,
+    /// The BlockStore hierarchy (to fetch from CXL/DRAM/remote).
+    hierarchy_root: Arc<dyn LevelNode>,
+    /// CUDA stream for async DMA transfers.
+    transfer_stream: CudaStream,
+    /// Per-group transfer state.
+    group_states: Vec<LayerGroupState>,
+}
+
+#[derive(Clone, Debug)]
+enum LayerGroupState {
+    /// Not yet scheduled for transfer.
+    Pending,
+    /// Transfer in progress (DMA from CXL/DRAM to GPU HBM).
+    InFlight { event: CudaEvent },
+    /// Data is in GPU HBM, ready for attention kernel.
+    Ready,
+    /// Attention has completed for this group.
+    Computed,
+}
+
+impl LayerPrefetchEngine {
+    /// Called before the attention kernel for each layer group.
+    /// Ensures the KV data for this group is in GPU HBM.
+    /// Returns a pointer to the KV data in GPU HBM.
+    ///
+    /// Non-blocking: if the data is already Ready, returns immediately.
+    /// If InFlight, synchronizes on the CUDA event.
+    /// Also kicks off prefetch for the next `prefetch_depth` groups.
+    pub fn get_kv_for_layer_group(
+        &mut self,
+        prefix_hash: &BlockHash,
+        group_idx: u32,
+    ) -> GpuKvPointer {
+        let group = &mut self.group_states[group_idx as usize];
+
+        match group {
+            LayerGroupState::Ready => {
+                // Already in GPU HBM — return pointer.
+            }
+            LayerGroupState::InFlight { event } => {
+                // Wait for the transfer to complete.
+                event.synchronize();
+                *group = LayerGroupState::Ready;
+            }
+            LayerGroupState::Pending => {
+                // Synchronous fallback: load now (stall).
+                self.sync_load_group(prefix_hash, group_idx);
+            }
+            LayerGroupState::Computed => {
+                panic!("Requesting already-computed layer group");
+            }
+        }
+
+        // Kick off prefetch for upcoming groups.
+        self.prefetch_ahead(prefix_hash, group_idx);
+
+        self.gpu_kv_pointer(group_idx)
+    }
+
+    /// Asynchronously prefetch the next N groups.
+    fn prefetch_ahead(&mut self, prefix_hash: &BlockHash, current_group: u32) {
+        for offset in 1..=self.prefetch_depth {
+            let target = current_group + offset;
+            if target >= self.num_groups() { break; }
+
+            if let LayerGroupState::Pending = &self.group_states[target as usize] {
+                self.async_load_group(prefix_hash, target);
+            }
+        }
+    }
+
+    /// Async load: fetch from BlockStore, DMA to GPU, set InFlight.
+    fn async_load_group(&mut self, prefix_hash: &BlockHash, group_idx: u32) {
+        let layer_start = group_idx * self.group_size;
+        let layer_end = (layer_start + self.group_size).min(self.num_layers);
+
+        let layer_block_id = LayerBlockId {
+            prefix_hash: *prefix_hash,
+            layer_start: layer_start as u16,
+            layer_end: layer_end as u16,
+        };
+
+        // Fetch from the hierarchy (will hit L3 CXL, L4, etc.)
+        let hash = layer_block_id.block_hash();
+        let data = self.fetch_from_hierarchy(&hash);
+
+        // Async DMA to GPU HBM on the transfer stream.
+        let event = self.transfer_stream.async_memcpy_h2d(
+            &data,
+            self.gpu_buffer_for_group(group_idx),
+        );
+
+        self.group_states[group_idx as usize] = LayerGroupState::InFlight { event };
+    }
+
+    fn num_groups(&self) -> u32 {
+        (self.num_layers + self.group_size - 1) / self.group_size
+    }
+}
+```
+
+### 19.5 Integration with the Attention Kernel
+
+The attention kernel must cooperate with the prefetch engine. Two integration patterns:
+
+#### Pattern A: Callback-Driven (Kernel Calls Prefetch Engine)
+
+The attention kernel calls the prefetch engine before each layer group:
+
+```rust
+/// Modified forward pass that integrates layer-wise prefetch.
+pub fn forward_pass_with_prefetch(
+    model: &Model,
+    input: &Tensor,
+    kv_cache: &mut LayerPrefetchEngine,
+    prefix_hash: &BlockHash,
+) -> Tensor {
+    let mut hidden = input.clone();
+
+    for group_idx in 0..kv_cache.num_groups() {
+        // Get KV data for this layer group (may block on prefetch).
+        let kv_ptr = kv_cache.get_kv_for_layer_group(prefix_hash, group_idx);
+
+        let layer_start = group_idx * kv_cache.group_size;
+        let layer_end = (layer_start + kv_cache.group_size).min(model.num_layers);
+
+        for layer in layer_start..layer_end {
+            // Standard attention + FFN, using the prefetched KV data.
+            hidden = model.layers[layer as usize].attention(&hidden, &kv_ptr, layer);
+            hidden = model.layers[layer as usize].ffn(&hidden);
+        }
+
+        kv_cache.mark_group_computed(group_idx);
+    }
+
+    hidden
+}
+```
+
+#### Pattern B: Double-Buffered (Separate Prefetch and Compute Streams)
+
+Use two CUDA streams — one for compute, one for DMA — with event-based synchronization:
+
+```
+CUDA Stream 0 (Compute):  [Attn L0-7] ──event→ [Attn L8-15] ──event→ [Attn L16-23] ...
+                               ↑                     ↑                      ↑
+                           wait(E_0)              wait(E_1)             wait(E_2)
+
+CUDA Stream 1 (DMA):     [DMA L0-7]  [DMA L8-15]  [DMA L16-23]  [DMA L24-31] ...
+                              ↓            ↓             ↓             ↓
+                          record(E_0)  record(E_1)   record(E_2)  record(E_3)
+```
+
+```rust
+/// Double-buffered prefetch with two CUDA streams.
+pub struct DoubleBufferPrefetch {
+    /// Compute stream (runs attention kernels).
+    compute_stream: CudaStream,
+    /// Transfer stream (runs async DMA).
+    transfer_stream: CudaStream,
+    /// Two GPU buffers for double-buffering.
+    buffers: [GpuBuffer; 2],
+    /// Events for stream synchronization.
+    transfer_events: Vec<CudaEvent>,
+}
+
+impl DoubleBufferPrefetch {
+    pub fn execute_pipelined(
+        &mut self,
+        model: &Model,
+        input: &Tensor,
+        prefix_hash: &BlockHash,
+        hierarchy: &dyn LevelNode,
+    ) -> Tensor {
+        let num_groups = self.num_groups(model.num_layers);
+        let mut hidden = input.clone();
+
+        // Kick off first DMA before any compute.
+        self.start_dma(0, prefix_hash, hierarchy);
+
+        for g in 0..num_groups {
+            let buf_idx = g % 2;
+
+            // Wait for this group's DMA to complete.
+            self.compute_stream.wait_event(&self.transfer_events[g]);
+
+            // Start DMA for group g+2 (double buffer lookahead).
+            if g + 2 < num_groups {
+                self.start_dma(g + 2, prefix_hash, hierarchy);
+            } else if g + 1 < num_groups {
+                // Ensure next group is also started.
+                self.start_dma(g + 1, prefix_hash, hierarchy);
+            }
+
+            // Compute attention for this group's layers.
+            let layer_start = g * self.group_size;
+            let layer_end = ((g + 1) * self.group_size).min(model.num_layers);
+            for layer in layer_start..layer_end {
+                hidden = model.layers[layer].attention_with_external_kv(
+                    &hidden,
+                    &self.buffers[buf_idx],
+                    layer - layer_start, // offset within the buffer
+                    &self.compute_stream,
+                );
+                hidden = model.layers[layer].ffn(&hidden, &self.compute_stream);
+            }
+        }
+
+        hidden
+    }
+
+    fn start_dma(&mut self, group_idx: usize, prefix_hash: &BlockHash, hierarchy: &dyn LevelNode) {
+        let buf_idx = group_idx % 2;
+        let layer_block_id = LayerBlockId {
+            prefix_hash: *prefix_hash,
+            layer_start: (group_idx * self.group_size) as u16,
+            layer_end: ((group_idx + 1) * self.group_size) as u16,
+        };
+        let hash = layer_block_id.block_hash();
+
+        // Fetch from hierarchy (host DRAM or CXL).
+        let data = find_and_fetch_block(hierarchy, &hash);
+
+        // Async DMA on transfer stream.
+        self.transfer_stream.async_memcpy_h2d(&data, &self.buffers[buf_idx]);
+        self.transfer_stream.record_event(&self.transfer_events[group_idx]);
+    }
+}
+```
+
+### 19.6 Layer-Wise BlockStore Changes
+
+The `BlockStore` trait itself does not change — `LayerBlockId::block_hash()` produces a standard `BlockHash`. The layer granularity is handled at the storage and retrieval level:
+
+```rust
+/// Layer-aware block storage.
+/// Splits a monolithic KvBlockData into layer-group blocks for L3+ storage.
+/// Reassembles them for L2 (GPU) if needed.
+pub struct LayerAwareBlockStore {
+    inner: Box<dyn BlockStore>,
+    /// Layer group size for this level.
+    group_size: u32,
+    /// Total model layers.
+    num_layers: u32,
+}
+
+impl LayerAwareBlockStore {
+    /// Store a monolithic block as multiple layer-group blocks.
+    pub fn store_layered(
+        &self,
+        prefix_hash: &BlockHash,
+        full_kv_data: &[u8],
+    ) -> Vec<Result<BlockHandle, BlockError>> {
+        let layer_size = full_kv_data.len() / self.num_layers as usize;
+        let mut results = Vec::new();
+
+        for group_start in (0..self.num_layers).step_by(self.group_size as usize) {
+            let group_end = (group_start + self.group_size).min(self.num_layers);
+            let layer_id = LayerBlockId {
+                prefix_hash: *prefix_hash,
+                layer_start: group_start as u16,
+                layer_end: group_end as u16,
+            };
+
+            let data_start = group_start as usize * layer_size;
+            let data_end = group_end as usize * layer_size;
+            let block = KvBlockData {
+                meta: KvBlockMeta {
+                    hash: layer_id.block_hash(),
+                    layer_start: group_start as u16,
+                    layer_end: group_end as u16,
+                    ..Default::default()
+                },
+                data: full_kv_data[data_start..data_end].to_vec(),
+            };
+
+            results.extend(self.inner.store(&[block]));
+        }
+
+        results
+    }
+
+    /// Fetch a specific layer group.
+    pub fn fetch_layer_group(
+        &self,
+        prefix_hash: &BlockHash,
+        layer_start: u16,
+        layer_end: u16,
+    ) -> Option<KvBlockData> {
+        let layer_id = LayerBlockId {
+            prefix_hash: *prefix_hash,
+            layer_start,
+            layer_end,
+        };
+        let hash = layer_id.block_hash();
+        self.inner.fetch(&[hash]).into_iter().next().flatten()
+    }
+}
+```
+
+### 19.7 Performance Analysis: Compute-IO Overlap
+
+For a 70B model (80 layers, GQA 8 KV heads, head_dim=128, FP16):
+
+| Parameter | Value |
+|---|---|
+| KV per layer per token | 2 × 8 × 128 × 2B = 4 KB |
+| KV per layer-group (8 layers, 128 tokens) | 8 × 128 × 4 KB = 4 MB |
+| CXL read bandwidth | ~32 GB/s (CXL 2.0 x16) |
+| Time to read 1 layer-group from CXL | 4 MB / 32 GB/s = **125 μs** |
+| Attention compute per layer-group (8 layers, 128 tokens, batch 1) | ~8 × 50 μs = **400 μs** |
+| Overlap ratio | 125 μs / 400 μs = **31%** — IO fully hidden within compute |
+
+```
+Without overlap (monolithic, 80 layers):
+  IO:  [====== 1.25 ms (load all) ======]
+  GPU:                                    [==== 4 ms (all layers) ====]
+  Total: 5.25 ms
+
+With overlap (8-layer groups, 10 groups):
+  IO:  [G0][G1][G2]...[G9]  (each 125μs, total 1.25 ms)
+  GPU:     [G0][G1][G2]...[G9]  (each 400μs, total 4 ms)
+  Total: 4.125 ms  (IO hidden behind compute, except first group)
+  Speedup: 5.25 / 4.125 = 1.27× for prefill from CXL
+```
+
+For larger batch sizes, compute time per group increases while IO time stays constant — the overlap becomes even more effective, approaching full IO hiding.
+
+### 19.8 Interaction with Eviction and Routing
+
+Layer-wise management affects eviction and routing:
+
+**Eviction:** Layer-group blocks can be evicted independently. Cold layers (layers rarely accessed — e.g., early layers that are common across many prefixes) can stay at higher hierarchy levels while hot layers are promoted. This enables **layer-heterogeneous caching**: keep layers 0-7 (common prefix layers) at L4 (CXL pool, shared across hosts) while layers 60-79 (sequence-specific) stay at L2 (GPU).
+
+**Routing:** The routing decision can consider per-layer hit rates. If a host has layers 0-39 cached but not 40-79, and another host has all 80 layers, the router should prefer the latter for a full-sequence request.
+
+```rust
+/// Extended routing score that considers layer coverage.
+fn score_child_layer_aware(
+    child: &dyn LevelNode,
+    prefix_hash: &BlockHash,
+    num_layers: u32,
+    group_size: u32,
+    params: &RoutingParams,
+) -> f64 {
+    let mut covered_groups = 0u32;
+    let total_groups = (num_layers + group_size - 1) / group_size;
+
+    for g in (0..num_layers).step_by(group_size as usize) {
+        let layer_id = LayerBlockId {
+            prefix_hash: *prefix_hash,
+            layer_start: g as u16,
+            layer_end: (g + group_size).min(num_layers) as u16,
+        };
+        let hash = layer_id.block_hash();
+        if child.store().contains(&[hash])[0] {
+            covered_groups += 1;
+        }
+    }
+
+    let coverage = covered_groups as f64 / total_groups as f64;
+    coverage * params.hit_weight
+    // ... plus load and capacity scores
+}
+```
+
+### 19.9 Configuration
+
+```yaml
+hierarchy:
+  layer_management:
+    enabled: true
+    num_layers: 80                # model-specific
+    # Per-level layer group sizes.
+    # Larger groups = less index overhead, less prefetch granularity.
+    group_sizes:
+      chip: 0                     # 0 = monolithic (all layers in one block on GPU)
+      host: 8                     # 8 layers per group in host DRAM/CXL
+      switch_domain: 16           # 16 layers per group in CXL pool
+      fabric: 16
+      global: 0                   # 0 = monolithic for remote store
+    prefetch:
+      depth: 2                    # prefetch 2 groups ahead
+      double_buffer: true         # use double-buffered DMA
+      compute_stream_priority: high
+      transfer_stream_priority: low
+```
+
+### 19.10 Impact on v8 Abstractions
+
+| Abstraction | Change |
+|---|---|
+| `BlockHash` / `KvBlockMeta` | **Extended** with `layer_start`/`layer_end` fields. Old monolithic blocks have `layer_start=0, layer_end=MAX`. |
+| `BlockStore` trait | **No change** — layer-group blocks are just blocks with different hashes. |
+| `LevelNode` trait | **No change** — routing uses `BlockStore::contains()` which works with any hash. |
+| `LayerPrefetchEngine` | **New** — coordinates layer-wise prefetch with attention compute. |
+| `DoubleBufferPrefetch` | **New** — double-buffered DMA for pipelined execution. |
+| `LayerAwareBlockStore` | **New** — wrapper that splits/reassembles layer-group blocks. |
+| Forward pass (`executor/`) | **Modified** — integrates with `LayerPrefetchEngine` for CXL-sourced KV. |
+| `RoutingParams` | **Extended** — optional layer-coverage scoring. |
+
+### 19.11 Implementation Phases
+
+**Phase 13a — Layer Block Identity (0.5 weeks):**
+- [ ] `LayerBlockId` struct and `block_hash()` method
+- [ ] Extend `KvBlockMeta` with `layer_start`/`layer_end`
+- [ ] `LayerAwareBlockStore` wrapper for split/reassemble
+- [ ] Tests: round-trip layer-group blocks through `BlockStore`
+
+**Phase 13b — Prefetch Engine (1 week):**
+- [ ] `LayerPrefetchEngine` with `get_kv_for_layer_group()`
+- [ ] `DoubleBufferPrefetch` with dual CUDA streams
+- [ ] Integration with forward pass
+- [ ] Benchmarks: prefill latency with/without layer-wise prefetch
+
+**Phase 13c — Layer-Aware Routing (0.5 weeks):**
+- [ ] `score_child_layer_aware()` with layer coverage scoring
+- [ ] Layer-heterogeneous eviction policy
+- [ ] Tests: routing prefers hosts with higher layer coverage
+
+---
+
 ## Key Design Decisions — Rationale
 
 **Traits over type erasure:** `BlockStore` and `LevelNode` are trait objects (`dyn BlockStore`, `dyn LevelNode`). This adds vtable overhead (~1ns per call) but enables the recursive tree to hold heterogeneous nodes (GPU, CXL, remote). At 1ns per vtable lookup vs. 10ms per inference step, this is unmeasurable.
@@ -2063,4 +2928,4 @@ v7's §18 was a table: "this component maps to that level." v8 makes the mapping
 
 ---
 
-*v8 inherits v7's corruption-resilient CXL architecture and restructures it around the Linqu hierarchical symmetry principle. The key change is not what the system does — it is how the system is organized. Every level now implements the same traits, uses the same metrics, follows the same routing/eviction/integrity patterns, and is configured with the same schema. This makes the system easier to extend (add a level), easier to monitor (uniform metrics), and easier to reason about (same patterns at every level). The performance characteristics are identical to v7 — the recursive structure is a zero-cost abstraction over the existing level-specific implementations.*
+*v8 inherits v7's corruption-resilient CXL architecture and restructures it around the Linqu hierarchical symmetry principle. The key change is not what the system does — it is how the system is organized. Every level now implements the same traits, uses the same metrics, follows the same routing/eviction/integrity patterns, and is configured with the same schema. This makes the system easier to extend (add a level), easier to monitor (uniform metrics), and easier to reason about (same patterns at every level). The performance characteristics are identical to v7 — the recursive structure is a zero-cost abstraction over the existing level-specific implementations. §18 adds meta index persistence (WAL + scalable gossip via bloom filters) to make TB-scale KVCache recoverable without recomputation. §19 adds layer-wise KVCache management with double-buffered prefetch to overlap compute and IO, hiding CXL transfer latency behind attention computation.*
