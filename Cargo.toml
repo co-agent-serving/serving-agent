@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "rust_llm_server",
+    "kv-cache",
+    "rustBindings/ascend",
+    "rustBindings/ascendcl-sys",
+    "rustBindings/aclnn-sys",
+    "rustBindings/hccl-sys",
+]
