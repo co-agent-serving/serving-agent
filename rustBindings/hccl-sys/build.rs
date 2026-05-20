@@ -1,51 +1,38 @@
 /// Build script for hccl-sys.
 ///
-/// Locates the CANN SDK installation and links against libhccl.so.
-/// Set ASCEND_HOME env var to override the default search path.
+/// Links against libhccl.so and libhcomm.so from a CANN SDK installation.
+/// Set ASCEND_HOME_PATH env var to the CANN SDK root (e.g. /usr/local/Ascend/ascend-toolkit/latest).
 ///
-/// With the "stub" feature, linking is skipped entirely.
+/// With the "stub" feature, linking is skipped — CANN is not required.
 fn main() {
-    if cfg!(feature = "stub") {
-        println!("cargo:warning=hccl-sys: building in STUB mode, no libhccl.so linked");
-        return;
-    }
-
-    let ascend_home = std::env::var("ASCEND_HOME").unwrap_or_else(|_| {
-        let candidates = [
-            "/usr/local/Ascend/ascend-toolkit/latest",
-            "/usr/local/Ascend/latest",
-            "/opt/ascend/ascend-toolkit/latest",
-        ];
-        for path in &candidates {
-            if std::path::Path::new(path)
-                .join("lib64/libhcomm.so")
-                .exists()
-            {
-                println!("cargo:warning=hccl-sys: auto-detected CANN at {}", path);
-                return path.to_string();
-            }
+    let ascend_home_path = match std::env::var("ASCEND_HOME_PATH") {
+        Ok(home) => home,
+        Err(_) if cfg!(feature = "stub") => {
+            // Stub mode: CANN not required, skip linking silently
+            return;
         }
-        panic!(
-            "CANN SDK not found (looking for libhcomm.so). Set ASCEND_HOME env var or install to /usr/local/Ascend/ascend-toolkit/latest\n\
-             Or build with --features stub to skip linking."
-        );
-    });
+        Err(_) => {
+            panic!(
+                "CANN SDK not found (looking for libhcomm.so). Set ASCEND_HOME_PATH env var, \
+                 or build with --features stub to skip linking (development without CANN)."
+            );
+        }
+    };
 
-    let lib_dir = format!("{}/lib64", ascend_home);
+    let lib_dir = format!("{ascend_home_path}/lib64");
+    let lib_path = format!("{lib_dir}/libhcomm.so");
 
-    let lib_path = format!("{}/libhcomm.so", lib_dir);
     if !std::path::Path::new(&lib_path).exists() {
         panic!(
-            "libhcomm.so not found at {}. Is CANN SDK installed correctly?\n\
-             ASCEND_HOME = {}",
-            lib_path, ascend_home
+            "libhcomm.so not found at {lib_path}. Is CANN SDK installed correctly?\n\
+             ASCEND_HOME_PATH = {ascend_home_path}"
         );
     }
 
-    println!("cargo:rustc-link-search=native={}", lib_dir);
+    println!("cargo:rustc-link-search=native={lib_dir}");
     println!("cargo:rustc-link-lib=dylib=hccl");
     println!("cargo:rustc-link-lib=dylib=hcomm");
 
-    println!("cargo:rerun-if-env-changed=ASCEND_HOME");
+    println!("cargo:rerun-if-env-changed=ASCEND_HOME_PATH");
     println!("cargo:rerun-if-changed=build.rs");
 }
