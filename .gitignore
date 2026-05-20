@@ -1,0 +1,5 @@
+# Rust build artifacts (matches any target/ in subdirectories)
+target/
+
+# Per-crate Cargo.lock files — workspace root Cargo.lock is the single source of truth
+Cargo.lock
