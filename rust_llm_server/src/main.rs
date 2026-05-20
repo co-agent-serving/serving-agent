@@ -1,23 +1,22 @@
-mod distributed;
-mod engine;
-mod model;
-mod ops;
-mod scheduler;
-mod server;
-
 use std::sync::Arc;
 
 use clap::Parser;
+use rust_llm_server::distributed::DistributedConfig;
+use rust_llm_server::engine::engine::Engine;
+use rust_llm_server::model::config::Qwen3Config;
+use rust_llm_server::model::network::Qwen3Model;
+use rust_llm_server::model::parallel::ParallelConfig;
+use rust_llm_server::model::quantize::QuantConfig;
+use rust_llm_server::model::weights::{self, SafetensorsLoader};
+use rust_llm_server::scheduler::Qwen3Tokenizer;
+use rust_llm_server::server::{AppState, serve};
 
-use engine::engine::Engine;
-use model::config::Qwen3Config;
-use model::network::Qwen3Model;
-use model::parallel::ParallelConfig;
-use model::quantize::QuantConfig;
-use model::weights::SafetensorsLoader;
-
-use scheduler::Qwen3Tokenizer;
-use server::AppState;
+#[cfg(feature = "ascend")]
+use rust_llm_server::ops::ascend::AscendComputeOps;
+#[cfg(all(feature = "ascend", feature = "hccl"))]
+use rust_llm_server::distributed::process_group;
+#[cfg(all(feature = "ascend", feature = "hccl"))]
+use rust_llm_server::ops::ascend_comm::AscendCommOps;
 
 /// Rust LLM inference server for Qwen3 models.
 #[derive(Parser, Debug)]
@@ -79,8 +78,11 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Inject CANN HCCL workaround for AICPU exception 507018 on AllReduce/Broadcast
-    std::env::set_var("HCCL_OP_EXPANSION_MODE", "AIV");
-    std::env::set_var("HCCL_BUFFSIZE", "512");
+    // SAFETY: Called before any threads are spawned; single-threaded startup.
+    unsafe {
+        std::env::set_var("HCCL_OP_EXPANSION_MODE", "AIV");
+        std::env::set_var("HCCL_BUFFSIZE", "512");
+    }
 
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -118,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 other => {
                     return Err(
                         format!("Unknown model variant: {other}. Use 0.6b, 4b, or 8b.").into(),
-                    )
+                    );
                 }
             }
         }
@@ -137,16 +139,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Qwen3Config::qwen3_8b()
             }
             other => {
-                return Err(format!("Unknown model variant: {other}. Use 0.6b, 4b, or 8b.").into())
+                return Err(format!("Unknown model variant: {other}. Use 0.6b, 4b, or 8b.").into());
             }
         }
     };
 
     // Build parallel config — use env vars (RANK, WORLD_SIZE) if set,
     // otherwise fall back to explicit --tp-rank / --pp-rank CLI args.
-    let distributed = if std::env::var("RANK").is_ok() && (cli.tp > 1 || cli.pp > 1 || cli.dp > 1)
-    {
-        match distributed::DistributedConfig::from_env(cli.tp, cli.pp, cli.dp) {
+    let distributed = if std::env::var("RANK").is_ok() && (cli.tp > 1 || cli.pp > 1 || cli.dp > 1) {
+        match DistributedConfig::from_env(cli.tp, cli.pp, cli.dp) {
             Ok(dist) => {
                 tracing::info!(
                     "Distributed mode: world_rank={}/{}, tp_rank={}, pp_rank={}, dp_rank={}, device={}",
@@ -187,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "int8" => QuantConfig::int8_per_tensor(),
         "awq-int4" => QuantConfig::awq_int4(128),
         other => {
-            return Err(format!("Unknown quant: {other}. Use none, int8, or awq-int4.").into())
+            return Err(format!("Unknown quant: {other}. Use none, int8, or awq-int4.").into());
         }
     };
 
@@ -195,18 +196,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // below for Engine::new_ascend(). OpsBundle::ascend() would create a second
     // Device::init() call which CANN rejects (error 507033: aclrtSetDevice twice).
     #[cfg(feature = "ascend")]
-    let ascend_ops_init: Option<crate::ops::ascend::AscendComputeOps> =
-        if cli.backend == "ascend" {
-            // --device-id takes priority; fall back to LOCAL_RANK from distributed config
-            let device_id = cli.device_id
-                .or_else(|| distributed.as_ref().map(|d| d.device_id()));
-            tracing::info!("Using ASCEND NPU backend");
-            let ops = crate::ops::ascend::AscendComputeOps::new(device_id)
-                .map_err(|e| format!("Failed to init Ascend backend: {}", e))?;
-            Some(ops)
-        } else {
-            None
-        };
+    let ascend_ops_init: Option<AscendComputeOps> = if cli.backend == "ascend" {
+        // --device-id takes priority; fall back to LOCAL_RANK from distributed config
+        let device_id = cli
+            .device_id
+            .or_else(|| distributed.as_ref().map(|d| d.device_id()));
+        tracing::info!("Using ASCEND NPU backend");
+        let ops = AscendComputeOps::new(device_id)
+            .map_err(|e| format!("Failed to init Ascend backend: {}", e))?;
+        Some(ops)
+    } else {
+        None
+    };
 
     let backend_label = match cli.backend.as_str() {
         "stub" => {
@@ -214,9 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "STUB (no-op)"
         }
         #[cfg(feature = "ascend")]
-        "ascend" => {
-            "ASCEND NPU (CANN)"
-        }
+        "ascend" => "ASCEND NPU (CANN)",
         #[cfg(not(feature = "ascend"))]
         "ascend" => {
             return Err(
@@ -247,9 +246,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(weights_dir) = &cli.weights {
         let loader = SafetensorsLoader::from_dir(std::path::Path::new(weights_dir))?;
         if parallel.is_tp() {
-            model::weights::load_weights_sharded(&mut model, &loader, &parallel)?;
+            weights::load_weights_sharded(&mut model, &loader, &parallel)?;
         } else {
-            model::weights::load_weights(&mut model, &loader)?;
+            weights::load_weights(&mut model, &loader)?;
         }
 
         // Upload to device if using ascend backend
@@ -257,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if cli.backend == "ascend" {
             // Reuse the already-initialized stream from ascend_ops
             if let Some(ref aops) = ascend_ops_init {
-                model::weights::upload_weights_to_device(&mut model, aops.stream())?;
+                weights::upload_weights_to_device(&mut model, aops.stream())?;
             }
         }
     } else {
@@ -280,15 +279,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref dist) = distributed {
         if !dist.is_single() && cli.backend == "ascend" {
             let root_info_dir = std::path::Path::new("/tmp/hccl_root_info");
-            let groups = distributed::process_group::init_process_groups(dist, root_info_dir)
+            let groups = process_group::init_process_groups(dist, root_info_dir)
                 .map_err(|e| format!("Failed to init HCCL process groups: {}", e))?;
 
             // Use the compute stream for HCCL ops (like vLLM uses current_stream()).
             // Using a separate comm stream causes AICPU exceptions (507018)
             // because HCCL internally requires stream/context alignment.
-            let comm_stream = engine.compute_stream()
+            let comm_stream = engine
+                .compute_stream()
                 .expect("compute stream required for HCCL comm ops");
-            let comm_ops = crate::ops::ascend_comm::AscendCommOps::new(
+            let comm_ops = AscendCommOps::new(
                 groups.tp_comm,
                 groups.pp_comm,
                 comm_stream,
@@ -296,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine.set_comm_ops(comm_ops);
 
             // Clean up root info files after all ranks have initialized
-            distributed::process_group::cleanup_root_info(root_info_dir);
+            process_group::cleanup_root_info(root_info_dir);
             tracing::info!("HCCL communicators initialized for distributed execution");
         }
     }
@@ -343,15 +343,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // This is the vLLM worker_busy_loop pattern — NPU-level sync only, no CPU mutex.
         tracing::info!(
             "Worker rank (tp_rank={}, pp_rank={}): entering HCCL broadcast worker loop",
-            parallel.tp_rank, parallel.pp_rank
+            parallel.tp_rank,
+            parallel.pp_rank
         );
 
         #[cfg(all(feature = "ascend", feature = "hccl"))]
         {
             // Take ownership of Engine out of the Arc<AppState>.
             // At this point exactly one Arc reference exists (no HTTP server started yet).
-            let app_state = Arc::try_unwrap(state)
-                .unwrap_or_else(|_| panic!("Worker: Arc<AppState> had unexpected additional references"));
+            let app_state = Arc::try_unwrap(state).unwrap_or_else(|_| {
+                panic!("Worker: Arc<AppState> had unexpected additional references")
+            });
             let engine = app_state.engine;
             let handle = std::thread::spawn(move || engine.run_worker_loop());
             handle.join().expect("Worker loop thread panicked");
@@ -375,6 +377,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║  Port: {:41}║", serve_port);
     println!("╚════════════════════════════════════════════════╝");
 
-    server::serve(state, serve_port).await?;
+    serve(state, serve_port).await?;
     Ok(())
 }
