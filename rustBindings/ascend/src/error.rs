@@ -22,7 +22,7 @@ pub enum AscendError {
     OutOfMemory { requested: usize, available: usize },
 }
 
-pub type Result<T> = std::result::Result<T, AscendError>;
+pub type Result<T> = core::result::Result<T, AscendError>;
 
 /// Check an AscendCL return code, converting non-zero to an error.
 #[inline]

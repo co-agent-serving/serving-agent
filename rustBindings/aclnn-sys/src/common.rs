@@ -3,49 +3,56 @@
 use std::os::raw::c_void;
 
 // Re-export base types from ascendcl-sys
-pub use ascendcl_sys::types::{AclDataType, AclFormat};
 pub use ascendcl_sys::AclrtStream;
+pub use ascendcl_sys::types::{AclDataType, AclFormat};
 
 // ─── Opaque aclnn Types ────────────────────────────────────────────────
 
 /// Opaque tensor descriptor for aclnn APIs. NOT the same as aclTensorDesc.
 /// Created via `aclCreateTensor`, destroyed via `aclDestroyTensor`.
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclTensor {
     _private: [u8; 0],
 }
 
 /// Opaque scalar descriptor.
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclScalar {
     _private: [u8; 0],
 }
 
 /// Opaque integer array descriptor.
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclIntArray {
     _private: [u8; 0],
 }
 
 /// Opaque boolean array descriptor.
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclBoolArray {
     _private: [u8; 0],
 }
 
 /// Opaque float array descriptor.
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclFloatArray {
     _private: [u8; 0],
 }
 
 /// Opaque tensor list descriptor.
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclTensorList {
     _private: [u8; 0],
 }
 
 /// Opaque operator executor handle (from GetWorkspaceSize, consumed by Execute).
+#[derive(Debug)]
 #[repr(C)]
 pub struct AclOpExecutor {
     _private: [u8; 0],
@@ -60,7 +67,7 @@ pub const ACLNN_SUCCESS: AclnnStatus = 0;
 
 // ─── Tensor Descriptor API ─────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Create an aclTensor descriptor from raw device memory.
     ///
     /// # Arguments

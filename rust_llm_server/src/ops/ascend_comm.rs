@@ -7,8 +7,8 @@
 use crate::model::device_tensor::DeviceTensor;
 use crate::model::tensor::DType;
 
-use ascend::comm::HcclCommunicator;
 use ascend::DeviceBuffer;
+use ascend::comm::HcclCommunicator;
 use hccl_sys::HcclDataType;
 
 /// Convert our `DType` to HCCL's `HcclDataType`.
@@ -25,6 +25,7 @@ fn to_hccl_dtype(dtype: DType) -> HcclDataType {
     }
 }
 
+#[allow(dead_code)]
 /// Convert our `DType` to CANN's `AclDataType` (for aclnnCast).
 fn to_acl_dtype(dtype: DType) -> aclnn_sys::common::AclDataType {
     use aclnn_sys::common::AclDataType;
@@ -43,6 +44,7 @@ fn to_acl_dtype(dtype: DType) -> aclnn_sys::common::AclDataType {
 ///
 /// Holds separate communicators for TP and PP groups. Uses the compute
 /// stream (non-owning handle) for automatic serialization with compute ops.
+#[derive(Debug)]
 pub struct AscendCommOps {
     /// Communicator for tensor parallelism group (AllReduce, AllGather).
     tp_comm: Option<HcclCommunicator>,
@@ -92,6 +94,7 @@ impl AscendCommOps {
             .expect("HCCL AllReduce failed");
     }
 
+    #[allow(dead_code)]
     /// Cast a device buffer from one dtype to another using aclnnCast.
     ///
     /// This is a helper for the FP32-upscale AllReduce path.
@@ -119,7 +122,7 @@ impl AscendCommOps {
 
         // Stage 1: get workspace size
         let mut ws_size: u64 = 0;
-        let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+        let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
         let status = unsafe {
             aclnnCastGetWorkspaceSize(
                 src_tensor.raw(),
@@ -133,17 +136,14 @@ impl AscendCommOps {
 
         // Allocate workspace if needed
         let ws_buf = if ws_size > 0 {
-            Some(DeviceBuffer::alloc(ws_size as usize)
-                .expect("Failed to allocate cast workspace"))
+            Some(DeviceBuffer::alloc(ws_size as usize).expect("Failed to allocate cast workspace"))
         } else {
             None
         };
-        let ws_ptr = ws_buf.as_ref().map_or(std::ptr::null_mut(), |b| b.ptr());
+        let ws_ptr = ws_buf.as_ref().map_or(core::ptr::null_mut(), |b| b.ptr());
 
         // Stage 2: execute cast
-        let status = unsafe {
-            aclnnCast(ws_ptr, ws_size, executor, self.stream_raw)
-        };
+        let status = unsafe { aclnnCast(ws_ptr, ws_size, executor, self.stream_raw) };
         assert_eq!(status, 0, "aclnnCast failed: {}", status);
     }
 
@@ -167,12 +167,7 @@ impl AscendCommOps {
     ///
     /// Allocates a new DeviceTensor with the given shape and receives into it.
     /// Used at pipeline stage boundaries to receive hidden states.
-    pub fn recv_tensor(
-        &self,
-        shape: &[usize],
-        dtype: DType,
-        src_rank: usize,
-    ) -> DeviceTensor {
+    pub fn recv_tensor(&self, shape: &[usize], dtype: DType, src_rank: usize) -> DeviceTensor {
         let comm = self
             .pp_comm
             .as_ref()
@@ -213,8 +208,14 @@ impl AscendCommOps {
         let out_size: usize = output_shape.iter().product::<usize>() * dtype.size_bytes();
         let out_buf = DeviceBuffer::alloc(out_size).expect("Failed to allocate all_gather output");
 
-        comm.all_gather(self.stream_raw, &tensor.buf, &out_buf, send_count, hccl_dtype)
-            .expect("HCCL AllGather failed");
+        comm.all_gather(
+            self.stream_raw,
+            &tensor.buf,
+            &out_buf,
+            send_count,
+            hccl_dtype,
+        )
+        .expect("HCCL AllGather failed");
 
         DeviceTensor::from_buf(output_shape.to_vec(), dtype, "tp_all_gather", out_buf)
     }
@@ -266,9 +267,8 @@ impl AscendCommOps {
         if is_root {
             // Upload from CPU to NPU, then broadcast
             // SAFETY: u32 has no invalid bit patterns; reinterpreting as bytes is safe.
-            let bytes = unsafe {
-                std::slice::from_raw_parts(ids.as_ptr() as *const u8, ids.len() * 4)
-            };
+            let bytes =
+                unsafe { core::slice::from_raw_parts(ids.as_ptr() as *const u8, ids.len() * 4) };
             buf.copy_from_host(bytes)
                 .expect("broadcast_u32_slice: failed to copy to device");
         }

@@ -1,29 +1,30 @@
-use std::convert::Infallible;
+use core::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Json,
+        sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
-    Router,
 };
 use futures_core::Stream;
-use serde_json::{json, Value};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use serde_json::{Value, json};
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::engine::engine::{GenerationConfig, StreamToken};
 use crate::scheduler::{
-    apply_chat_template, ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice,
-    ChatCompletionRequest, ChatCompletionResponse, ChatDelta, ChatMessage, CompletionRequest,
-    CompletionResponse, Qwen3Tokenizer, UsageInfo,
+    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionRequest,
+    ChatCompletionResponse, ChatDelta, ChatMessage, CompletionRequest, CompletionResponse,
+    Qwen3Tokenizer, UsageInfo, apply_chat_template,
 };
 
 /// Shared application state for the HTTP server.
+#[derive(Debug)]
 pub struct AppState {
     pub engine: crate::engine::engine::Engine,
     pub tokenizer: Qwen3Tokenizer,
@@ -355,7 +356,7 @@ fn uuid_simple() -> String {
 }
 
 /// Start the HTTP server.
-pub async fn serve(state: Arc<AppState>, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve(state: Arc<AppState>, port: u16) -> Result<(), Box<dyn core::error::Error>> {
     let app = build_router(state);
     let addr = format!("0.0.0.0:{port}");
 

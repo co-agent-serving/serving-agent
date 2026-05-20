@@ -9,7 +9,7 @@
 use super::common::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // IncreFlashAttentionV4: Decode-phase PagedAttention.
     //

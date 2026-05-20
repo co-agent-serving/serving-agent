@@ -4,6 +4,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SequenceId(pub u64);
 
+#[derive(Debug)]
 pub struct SequenceBlockTracker {
     pub seq_id: SequenceId,
     pub block_size: usize,
@@ -41,6 +42,7 @@ impl SequenceBlockTracker {
     }
 }
 
+#[derive(Debug)]
 pub struct BlockManager {
     pub cache: RadixCache,
     pub block_size: usize,
@@ -71,7 +73,7 @@ impl BlockManager {
         let mut tracker = SequenceBlockTracker::new(seq_id, self.block_size);
 
         // 1. Chunk prompt tokens into blocks
-        let num_blocks = (prompt_tokens.len() + self.block_size - 1) / self.block_size;
+        let num_blocks = prompt_tokens.len().div_ceil(self.block_size);
         let num_full_blocks = prompt_tokens.len() / self.block_size;
 
         let mut hashes_to_match = Vec::new();
@@ -103,6 +105,7 @@ impl BlockManager {
             return Err("Out of memory for KV blocks".into());
         }
 
+        #[allow(clippy::needless_range_loop)]
         for i in num_matched..num_blocks {
             let b = self.cache.allocate().unwrap();
             tracker.physical_blocks.push(b);
@@ -116,7 +119,7 @@ impl BlockManager {
         }
 
         tracker.last_block_len = prompt_tokens.len() - ((num_blocks - 1) * self.block_size);
-        if prompt_tokens.len() == 0 {
+        if prompt_tokens.is_empty() {
             tracker.last_block_len = 0;
         }
 

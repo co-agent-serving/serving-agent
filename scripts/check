@@ -27,6 +27,7 @@ echo "--- fmt ---"
 cargo fmt --all --check
 
 check_setup "default (stub)" --workspace
+check_setup "ascend (no hccl)" -p rust_llm_server --features "ascend"
 check_setup "ascend + hccl" -p rust_llm_server --features "ascend,hccl"
 check_setup "ascend crate stub" -p ascend --features stub
 

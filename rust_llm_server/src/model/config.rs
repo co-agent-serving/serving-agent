@@ -95,7 +95,7 @@ impl Qwen3Config {
     }
 
     /// Load configuration from a JSON file.
-    pub fn from_json(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_json(path: &str) -> Result<Self, Box<dyn core::error::Error>> {
         let data = std::fs::read_to_string(path)?;
         let config: Self = serde_json::from_str(&data)?;
         Ok(config)

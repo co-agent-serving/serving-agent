@@ -7,7 +7,7 @@ use std::os::raw::c_void;
 
 // ─── Add (out = self + other * alpha) ──────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Add workspace.
     /// Computes: out = self + other * alpha
     pub fn aclnnAddGetWorkspaceSize(
@@ -30,7 +30,7 @@ extern "C" {
 
 // ─── InplaceAdd (self += other * alpha) ────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: In-place Add workspace.
     pub fn aclnnInplaceAddGetWorkspaceSize(
         self_: *const AclTensor,
@@ -51,7 +51,7 @@ extern "C" {
 
 // ─── Mul (out = self * other) ──────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Mul workspace.
     pub fn aclnnMulGetWorkspaceSize(
         self_: *const AclTensor,
@@ -72,7 +72,7 @@ extern "C" {
 
 // ─── Cast (out = cast(self, dtype)) ────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Cast workspace.
     /// Converts `self` tensor to the specified `dtype`.
     pub fn aclnnCastGetWorkspaceSize(

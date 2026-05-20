@@ -26,7 +26,7 @@ pub type AclrtStream = *mut c_void;
 
 // ─── HCCL API Functions ────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Generate a unique root info for communicator initialization.
     /// Must be called by rank 0, then broadcast to all other ranks.
     ///

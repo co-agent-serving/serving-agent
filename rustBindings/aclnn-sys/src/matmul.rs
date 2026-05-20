@@ -6,7 +6,7 @@
 use super::common::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Get workspace size for matmul.
     ///
     /// - `self_`: [M, K] input tensor
@@ -33,7 +33,7 @@ extern "C" {
 
 // ─── Batch MatMul ──────────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Batch matmul workspace.
     /// out = batch_matmul(self, mat2)
     pub fn aclnnBatchMatMulGetWorkspaceSize(

@@ -172,6 +172,7 @@ pub struct SchedulerSequence {
 /// The v8 design calls for a continuous batching scheduler with
 /// hierarchical routing — that would replace this.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct Scheduler {
     next_seq_id: u64,
 }
@@ -205,6 +206,7 @@ impl Default for Scheduler {
 ///
 /// Loads `tokenizer.json` from the model weights directory for
 /// proper encode/decode of Qwen3 tokens.
+#[derive(Debug)]
 pub struct Qwen3Tokenizer {
     inner: tokenizers::Tokenizer,
 }

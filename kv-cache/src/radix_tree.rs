@@ -1,6 +1,6 @@
+use core::hash::{Hash, Hasher};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 pub type BlockId = u32;
 
@@ -49,6 +49,7 @@ impl KVCacheBlock {
 
 /// A Doubly Linked List for Free Blocks.
 /// O(1) Push Back (LRU tail), Pop Front (LRU head/eviction), and Remove Middle (Cache Hit/Reuse).
+#[derive(Debug)]
 struct FreeQueue {
     head: u32,
     tail: u32,
@@ -117,6 +118,7 @@ impl FreeQueue {
 
 /// An O(1) Prefix Cache that simulates a Radix Tree using a Hash Chain.
 /// This matches the architecture of vLLM v1.
+#[derive(Debug)]
 pub struct RadixCache {
     /// Global block pool holding the physical states of blocks
     blocks: Vec<KVCacheBlock>,
@@ -131,6 +133,7 @@ impl RadixCache {
         let mut blocks = Vec::with_capacity(num_blocks);
         let mut free_queue = FreeQueue::new();
 
+        #[allow(clippy::cast_possible_truncation)]
         for i in 0..num_blocks {
             blocks.push(KVCacheBlock::new(i as u32));
             free_queue.push_back(i as u32, &mut blocks);

@@ -1,5 +1,3 @@
-
-
 #[cfg(feature = "ascend")]
 pub mod ascend;
 
@@ -16,6 +14,7 @@ pub mod ascend_comm {
     /// Stub type — never constructed at runtime. Satisfies type signatures in
     /// execute_paged when HCCL support is not compiled in. Methods panic if
     /// somehow called, which cannot happen since comm_ops is always None.
+    #[derive(Debug)]
     pub struct AscendCommOps;
 
     impl AscendCommOps {
@@ -25,9 +24,13 @@ pub mod ascend_comm {
         pub fn send_tensor(&self, _tensor: &DeviceTensor, _dst_rank: usize) {
             panic!("HCCL not compiled in — build with --features hccl");
         }
-        pub fn recv_tensor(&self, _shape: &[usize], _dtype: DType, _src_rank: usize) -> DeviceTensor {
+        pub fn recv_tensor(
+            &self,
+            _shape: &[usize],
+            _dtype: DType,
+            _src_rank: usize,
+        ) -> DeviceTensor {
             panic!("HCCL not compiled in — build with --features hccl");
         }
     }
 }
-

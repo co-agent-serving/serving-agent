@@ -77,6 +77,7 @@ impl KVCacheConfig {
 ///   - For each layer: value_cache [num_blocks, block_size, num_kv_heads, head_dim]
 ///
 /// All stored contiguously in a single device allocation for cache coherency.
+#[derive(Debug)]
 pub struct KVCachePool {
     pub config: KVCacheConfig,
     /// Base device pointer (set after aclrtMalloc).
@@ -117,6 +118,7 @@ impl KVCachePool {
     /// Build a slot_mapping vector for a batch of sequences.
     /// Input: for each token in the batch, (block_id, offset_in_block).
     /// Output: flat i32 array of slots for reshape_and_cache.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     pub fn build_slot_mapping(slots: &[(BlockId, usize)], block_size: usize) -> Vec<i32> {
         slots
             .iter()
@@ -132,6 +134,7 @@ impl KVCachePool {
         max_blocks_per_seq: usize,
     ) -> Vec<i32> {
         let mut table = vec![0i32; seq_block_ids.len() * max_blocks_per_seq];
+        #[allow(clippy::cast_possible_wrap)]
         for (seq_idx, blocks) in seq_block_ids.iter().enumerate() {
             for (blk_idx, &bid) in blocks.iter().enumerate() {
                 if blk_idx < max_blocks_per_seq {

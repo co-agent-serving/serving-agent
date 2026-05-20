@@ -1,12 +1,12 @@
 //! aclnnEmbedding — Token embedding lookup.
 //!
 //! C API: `aclnn/aclnn_embedding.h`
-//! Computes: out[i] = weight[indices[i]]
+//! Computes: out\[i\] = weight\[indices\[i\]\]
 
 use super::common::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Get workspace size for Embedding.
     ///
     /// - `weight`: embedding table [vocab_size, embed_dim]

@@ -2,8 +2,8 @@
 //!
 //! Handles AscendCL initialization/finalization and device selection.
 
-use crate::error::{check_acl, Result};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::error::{Result, check_acl};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -12,7 +12,7 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// `AclrtContext = *mut c_void` is not `Send` by default, but CANN context
 /// handles are explicitly designed to be passed across threads via
 /// `aclrtSetCurrentContext`. This newtype asserts that it is safe to do so.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct AclContext(pub ascendcl_sys::AclrtContext);
 
 // SAFETY: CANN context handles are designed to be shared across threads.
@@ -30,6 +30,7 @@ unsafe impl Sync for AclContext {}
 /// // ... use device ...
 /// // aclFinalize called on drop
 /// ```
+#[derive(Debug)]
 pub struct Device {
     device_id: i32,
 }
@@ -43,7 +44,7 @@ impl Device {
             return Ok(Self { device_id });
         }
 
-        check_acl(unsafe { ascendcl_sys::aclInit(std::ptr::null()) })?;
+        check_acl(unsafe { ascendcl_sys::aclInit(core::ptr::null()) })?;
         check_acl(unsafe { ascendcl_sys::aclrtSetDevice(device_id) })?;
 
         Ok(Self { device_id })
@@ -99,7 +100,7 @@ impl Device {
     /// In CANN, `aclrtSetDevice` can only be called once per process per device.
     /// Worker threads must use `aclrtSetCurrentContext` to share the context.
     pub fn get_current_context() -> Result<AclContext> {
-        let mut ctx: ascendcl_sys::AclrtContext = std::ptr::null_mut();
+        let mut ctx: ascendcl_sys::AclrtContext = core::ptr::null_mut();
         check_acl(unsafe { ascendcl_sys::aclrtGetCurrentContext(&mut ctx) })?;
         Ok(AclContext(ctx))
     }

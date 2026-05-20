@@ -1,10 +1,9 @@
 use super::kv_cache::KVCacheManager;
-use super::plan::{compile_plan, CompiledPlan};
+use super::plan::{CompiledPlan, compile_plan};
 use crate::model::config::Qwen3Config;
 use crate::model::network::Qwen3Model;
 use crate::model::parallel::ParallelConfig;
 use crate::model::quantize::QuantConfig;
-
 
 // Paged KV Cache integration
 use kv_cache::block_manager::BlockManager;
@@ -73,6 +72,7 @@ pub struct GenerationResult {
 /// The model is stored here to keep its `device_buf`s alive — the plan's
 /// weight tensors hold `data_ptr` pointers into this model's device memory.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct Engine {
     config: Qwen3Config,
 
@@ -120,11 +120,7 @@ impl Engine {
     /// * `ops` - Operator bundle (compute + comm + quant)
     /// * `parallel` - Parallel execution config
     /// * `quant` - Quantization config
-    pub fn new(
-        model: Qwen3Model,
-        parallel: ParallelConfig,
-        quant: QuantConfig,
-    ) -> Self {
+    pub fn new(model: Qwen3Model, parallel: ParallelConfig, quant: QuantConfig) -> Self {
         let config = model.config.clone();
         let model_info = format!(
             "{} ({}B params, {} layers, hidden={}, heads={}/{}, tp={}, pp={})",
@@ -179,7 +175,7 @@ impl Engine {
             #[cfg(feature = "ascend")]
             comm_ops: None,
             #[cfg(feature = "ascend")]
-            acl_context: ascend::AclContext(std::ptr::null_mut()),
+            acl_context: ascend::AclContext(core::ptr::null_mut()),
             #[cfg(feature = "ascend")]
             weight_tensors_v2: Vec::new(),
             block_manager,
@@ -237,7 +233,9 @@ impl Engine {
             .weight_names
             .iter()
             .map(|name| {
-                let t = model_tensors.iter().find(|t| &t.name == name)
+                let t = model_tensors
+                    .iter()
+                    .find(|t| &t.name == name)
                     .unwrap_or_else(|| panic!("Weight not found in model: {}", name));
                 let ptr = t.data_ptr.expect("weight must have data_ptr");
                 let buf = unsafe {
@@ -251,14 +249,16 @@ impl Engine {
             .collect();
         tracing::info!("Created {} WeightTensor v2 views", weight_tensors_v2.len());
 
-        let model_dtype = weight_tensors_v2.first().map(|w| w.dtype()).unwrap_or(crate::model::tensor::DType::Float16);
+        let model_dtype = weight_tensors_v2
+            .first()
+            .map(|w| w.dtype())
+            .unwrap_or(crate::model::tensor::DType::Float16);
         ascend_ops.precompute_rope(
             config.max_position_embeddings,
             config.head_dim,
             config.rope_theta,
             model_dtype,
         );
-
 
         let compiled_plan = plan.compile();
         let kv_cache_manager = KVCacheManager::new(config.clone(), config.max_position_embeddings);
@@ -279,12 +279,11 @@ impl Engine {
 
         // Allocate per-layer KV cache device buffers on NPU
         // TP: num_kv_heads / tp_size per rank
-        let per_layer_bytes =
-            num_blocks * block_size * kv_heads_per_rank * config.head_dim * 2; // FP16
+        let per_layer_bytes = num_blocks * block_size * kv_heads_per_rank * config.head_dim * 2; // FP16
         let num_layers = model.num_layers(); // PP-aware: only this stage's layers
         let mut kv_key_caches = Vec::with_capacity(num_layers);
         let mut kv_value_caches = Vec::with_capacity(num_layers);
-        for layer in 0..num_layers {
+        for _layer in 0..num_layers {
             let mut k_buf = ascend::memory::DeviceBuffer::alloc(per_layer_bytes)
                 .expect("KV cache: failed to allocate K cache");
             let mut v_buf = ascend::memory::DeviceBuffer::alloc(per_layer_bytes)
@@ -322,7 +321,7 @@ impl Engine {
             // Capture the ACL context from this (main) thread so worker threads
             // can call set_current_context() — the correct CANN multi-thread pattern.
             acl_context: ascend::Device::get_current_context()
-                .unwrap_or(ascend::AclContext(std::ptr::null_mut())),
+                .unwrap_or(ascend::AclContext(core::ptr::null_mut())),
             weight_tensors_v2,
             block_manager,
             kv_pool,
@@ -338,7 +337,7 @@ impl Engine {
     /// made exactly once per OS or Tokio worker thread. Safe to call repeatedly.
     #[cfg(feature = "ascend")]
     fn ensure_device_context(&self) {
-        use std::cell::Cell;
+        use core::cell::Cell;
         thread_local! {
             static CONTEXT_SET: Cell<bool> = const { Cell::new(false) };
         }
@@ -351,7 +350,6 @@ impl Engine {
         });
     }
 
-
     #[cfg(feature = "ascend")]
     #[inline]
     pub fn run_forward_step(
@@ -362,7 +360,10 @@ impl Engine {
         positions: &[u32],
         paged_ctx: &crate::engine::plan::PagedKVContext,
     ) -> u32 {
-        let ascend_ops = self.ascend_ops.as_ref().expect("run_forward_step requires ascend_ops");
+        let ascend_ops = self
+            .ascend_ops
+            .as_ref()
+            .expect("run_forward_step requires ascend_ops");
         let weights = &self.weight_tensors_v2;
         self.compiled_plan.execute_paged(
             ascend_ops,
@@ -394,7 +395,6 @@ impl Engine {
         let perf_breakdown = *super::plan::PERF_BREAKDOWN;
         let perf_skip_steps = *super::plan::PERF_SKIP_STEPS;
 
-        
         let mut pool =
             crate::model::device_tensor::TensorPool::new(self.compiled_plan.plan().num_buffers);
         let mut rotating_pool = crate::model::scratch_arena::RotatingPool::new();
@@ -413,7 +413,7 @@ impl Engine {
 
             let tracker = bm.active_seqs.get(&seq_id).unwrap();
             let block_table_flat = KVCachePool::build_block_table(
-                &[tracker.physical_blocks.clone()],
+                core::slice::from_ref(&tracker.physical_blocks),
                 tracker.physical_blocks.len(),
             );
 
@@ -439,7 +439,7 @@ impl Engine {
                 max_blocks_per_seq: tracker.physical_blocks.len(),
                 slot_mapping,
                 block_size,
-                layer_idx: std::cell::Cell::new(0),
+                layer_idx: core::cell::Cell::new(0),
             }
         }; // lock released here before expensive NPU work
         let prefill_prepare_ms = prefill_prepare_start.elapsed().as_secs_f64() * 1000.0;
@@ -447,7 +447,7 @@ impl Engine {
         let positions: Vec<u32> = (0..prompt_ids.len() as u32).collect();
 
         // --- TP: broadcast input_ids, positions, and full KV Context to worker ranks ---
-        #[allow(unused_mut)]
+        #[allow(unused_mut, unused_assignments)]
         let mut prefill_broadcast_ms = 0.0;
         #[cfg(all(feature = "ascend", feature = "hccl"))]
         {
@@ -486,6 +486,8 @@ impl Engine {
         let ttft_ms = request_start.elapsed().as_secs_f64() * 1000.0;
         let mut decode_time_after_first_ms = 0.0_f64;
         let mut decode_prepare_ms = 0.0_f64;
+        // `mut` is only used when both ascend and hccl are enabled (TP broadcast).
+        #[cfg_attr(not(all(feature = "ascend", feature = "hccl")), allow(unused_mut))]
         let mut decode_broadcast_ms = 0.0_f64;
         let mut decode_execute_ms = 0.0_f64;
         let mut decode_post_ms = 0.0_f64;
@@ -502,6 +504,7 @@ impl Engine {
         // and prior decode steps.
         let mut context_len = prompt_ids.len() + 1; // prompt + first generated token
 
+        #[allow(clippy::explicit_counter_loop)]
         for _step in 0..gen_config.max_new_tokens.saturating_sub(1) {
             let decode_step_start = Instant::now();
             let latest_token = *generated_tokens.last().unwrap();
@@ -520,7 +523,7 @@ impl Engine {
                 let bm = self.block_manager.lock().unwrap();
                 let tracker = bm.active_seqs.get(&seq_id).unwrap();
                 let block_table = KVCachePool::build_block_table(
-                    &[tracker.physical_blocks.clone()],
+                    core::slice::from_ref(&tracker.physical_blocks),
                     tracker.physical_blocks.len(),
                 );
 
@@ -538,7 +541,7 @@ impl Engine {
                     max_blocks_per_seq: tracker.physical_blocks.len(),
                     slot_mapping: vec![slot],
                     block_size,
-                    layer_idx: std::cell::Cell::new(0),
+                    layer_idx: core::cell::Cell::new(0),
                 }
             };
             decode_prepare_ms += decode_step_start.elapsed().as_secs_f64() * 1000.0;
@@ -563,7 +566,10 @@ impl Engine {
                 &positions,
                 &decode_ctx,
             );
-            tracing::debug!("[Rank 0] Decode: execute_paged done (sampled {})", next_token_inner);
+            tracing::debug!(
+                "[Rank 0] Decode: execute_paged done (sampled {})",
+                next_token_inner
+            );
             let step_ms = step_start.elapsed().as_secs_f64() * 1000.0;
             decode_execute_ms += step_ms;
             decode_steps_total += 1;
@@ -606,9 +612,12 @@ impl Engine {
         let total_ms = request_start.elapsed().as_secs_f64() * 1000.0;
         if perf_breakdown {
             let decode_total_wall_ms = (total_ms - ttft_ms).max(0.0);
-            let decode_other_ms =
-                (decode_total_wall_ms - decode_prepare_ms - decode_broadcast_ms - decode_execute_ms - decode_post_ms)
-                    .max(0.0);
+            let decode_other_ms = (decode_total_wall_ms
+                - decode_prepare_ms
+                - decode_broadcast_ms
+                - decode_execute_ms
+                - decode_post_ms)
+                .max(0.0);
             tracing::info!(
                 "PerfBreakdown: prefill_prepare_ms={:.2}, prefill_broadcast_ms={:.2}, prefill_execute_ms={:.2}, decode_steps_total={}, decode_steps_committed={}, decode_prepare_ms={:.2}, decode_broadcast_ms={:.2}, decode_execute_ms={:.2}, decode_post_ms={:.2}, decode_other_ms={:.2}",
                 prefill_prepare_ms,
@@ -629,7 +638,7 @@ impl Engine {
                     return None;
                 }
                 let mut sorted = samples.to_vec();
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
                 let avg = sorted.iter().sum::<f64>() / sorted.len() as f64;
                 let pick = |p: f64| -> f64 {
                     let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
@@ -723,7 +732,7 @@ impl Engine {
 
             let tracker = bm.active_seqs.get(&seq_id).unwrap();
             let block_table_flat = KVCachePool::build_block_table(
-                &[tracker.physical_blocks.clone()],
+                core::slice::from_ref(&tracker.physical_blocks),
                 tracker.physical_blocks.len(),
             );
 
@@ -742,7 +751,7 @@ impl Engine {
                 max_blocks_per_seq: tracker.physical_blocks.len(),
                 slot_mapping,
                 block_size,
-                layer_idx: std::cell::Cell::new(0),
+                layer_idx: core::cell::Cell::new(0),
             }
         };
 
@@ -781,6 +790,7 @@ impl Engine {
         // 2. Decode
         let mut context_len = prompt_ids.len() + 1;
 
+        #[allow(clippy::explicit_counter_loop)]
         for _step in 0..gen_config.max_new_tokens.saturating_sub(1) {
             let latest_token = *generated_tokens.last().unwrap();
 
@@ -795,7 +805,7 @@ impl Engine {
                 let bm = self.block_manager.lock().unwrap();
                 let tracker = bm.active_seqs.get(&seq_id).unwrap();
                 let block_table = KVCachePool::build_block_table(
-                    &[tracker.physical_blocks.clone()],
+                    core::slice::from_ref(&tracker.physical_blocks),
                     tracker.physical_blocks.len(),
                 );
 
@@ -812,7 +822,7 @@ impl Engine {
                     max_blocks_per_seq: tracker.physical_blocks.len(),
                     slot_mapping: vec![slot],
                     block_size,
-                    layer_idx: std::cell::Cell::new(0),
+                    layer_idx: core::cell::Cell::new(0),
                 }
             };
 
@@ -900,10 +910,8 @@ impl Engine {
             ];
             comm.broadcast_u32_slice(&meta, "paged_meta", 0, true);
 
-            let payload_len = prompt_ids.len()
-                + positions.len()
-                + ctx.block_table.len()
-                + ctx.slot_mapping.len();
+            let payload_len =
+                prompt_ids.len() + positions.len() + ctx.block_table.len() + ctx.slot_mapping.len();
 
             let mut payload = Vec::with_capacity(payload_len);
             payload.extend_from_slice(prompt_ids);
@@ -917,7 +925,6 @@ impl Engine {
             comm.broadcast_u32_slice(&payload, "paged_payload", 0, true);
         }
     }
-
 
     /// Worker rank main loop — blocks on HCCL broadcast from primary (tp_rank=0).
     ///
@@ -954,8 +961,12 @@ impl Engine {
             let meta_tensor = comm.broadcast_u32_slice(&[0; 5], "paged_meta", 0, false);
             let mut meta = [0u32; 5];
             {
-                let bytes = unsafe { std::slice::from_raw_parts_mut(meta.as_mut_ptr() as *mut u8, 20) };
-                meta_tensor.buf.copy_to_host(bytes).expect("Worker: copy meta from device failed");
+                let bytes =
+                    unsafe { core::slice::from_raw_parts_mut(meta.as_mut_ptr() as *mut u8, 20) };
+                meta_tensor
+                    .buf
+                    .copy_to_host(bytes)
+                    .expect("Worker: copy meta from device failed");
             }
             drop(meta_tensor);
 
@@ -974,14 +985,21 @@ impl Engine {
             // Wait for packed payload
             let payload_len = input_len + input_len + block_table_len + slot_mapping_len;
             let dummy_payload = vec![0u32; payload_len];
-            let payload_tensor = comm.broadcast_u32_slice(&dummy_payload, "paged_payload", 0, false);
+            let payload_tensor =
+                comm.broadcast_u32_slice(&dummy_payload, "paged_payload", 0, false);
 
             let mut payload = vec![0u32; payload_len];
             {
                 let bytes = unsafe {
-                    std::slice::from_raw_parts_mut(payload.as_mut_ptr() as *mut u8, payload_len * 4)
+                    core::slice::from_raw_parts_mut(
+                        payload.as_mut_ptr() as *mut u8,
+                        payload_len * 4,
+                    )
                 };
-                payload_tensor.buf.copy_to_host(bytes).expect("Worker: copy payload from device failed");
+                payload_tensor
+                    .buf
+                    .copy_to_host(bytes)
+                    .expect("Worker: copy payload from device failed");
             }
             drop(payload_tensor);
 
@@ -1012,15 +1030,17 @@ impl Engine {
                 max_blocks_per_seq,
                 slot_mapping,
                 block_size,
-                layer_idx: std::cell::Cell::new(0),
+                layer_idx: core::cell::Cell::new(0),
             };
 
-            let mut pool = crate::model::device_tensor::TensorPool::new(
-                self.compiled_plan.plan().num_buffers,
-            );
+            let mut pool =
+                crate::model::device_tensor::TensorPool::new(self.compiled_plan.plan().num_buffers);
 
             // Execute — HCCL AllReduce syncs this rank with the primary automatically.
-            tracing::debug!("Worker: before execute_paged (is_decode={})", paged_ctx.is_decode);
+            tracing::debug!(
+                "Worker: before execute_paged (is_decode={})",
+                paged_ctx.is_decode
+            );
             let _discarded_token = self.run_forward_step(
                 &mut pool,
                 &mut rotating_pool,
@@ -1079,7 +1099,7 @@ impl Engine {
     /// using TP or PP.
     #[cfg(all(feature = "ascend", feature = "hccl"))]
     pub fn set_comm_ops(&mut self, comm_ops: crate::ops::ascend_comm::AscendCommOps) {
-        self.comm_ops = Some(comm_ops);  // field is always Option<AscendCommOps> (stub when no hccl)
+        self.comm_ops = Some(comm_ops); // field is always Option<AscendCommOps> (stub when no hccl)
     }
 
     /// Get the raw AscendCL stream handle from the compute ops.
@@ -1110,11 +1130,7 @@ mod tests {
     fn test_engine_model_info() {
         let config = Qwen3Config::qwen3_8b();
         let model = Qwen3Model::new(config);
-        let engine = Engine::new(
-            model,
-            ParallelConfig::single_device(),
-            QuantConfig::none(),
-        );
+        let engine = Engine::new(model, ParallelConfig::single_device(), QuantConfig::none());
 
         let info = engine.model_info();
         assert!(info.contains("qwen3"));

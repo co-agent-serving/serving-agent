@@ -15,8 +15,15 @@
 //! cargo test --test integration
 //! ```
 
+// Allow eprintln! for debugging in tests, and silence unused deps brought in
+// by the test runner but not explicitly used here.
+#![allow(clippy::print_stderr)]
+
 use aclnn_sys::common::AclDataType;
 use ascend::{AclTensor, Device, DeviceBuffer, Stream};
+
+use ascendcl_sys as _;
+use thiserror as _;
 
 /// Helper: skip test if ASCEND_DEVICE_ID is not set.
 /// Returns the device guard if hardware is available.

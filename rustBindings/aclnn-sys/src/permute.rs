@@ -2,7 +2,7 @@
 
 use super::common::*;
 
-extern "C" {
+unsafe extern "C" {
     /// aclnnPermute: transpose/permute tensor dimensions.
     /// - `self_`: input tensor
     /// - `dims`: permutation array (e.g., [0, 2, 1, 3] for BNSD→BSND)

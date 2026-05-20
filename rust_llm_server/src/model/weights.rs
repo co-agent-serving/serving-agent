@@ -45,6 +45,7 @@ pub trait WeightLoader {
 // ─── SafetensorsLoader ─────────────────────────────────────────────────
 
 /// A single memory-mapped safetensors file.
+#[derive(Debug)]
 struct MappedSafetensors {
     _path: PathBuf,
     mmap: Mmap,
@@ -54,6 +55,7 @@ struct MappedSafetensors {
 ///
 /// Uses memory mapping for zero-copy reads — the OS handles paging
 /// data in from disk as needed, avoiding 2× memory for large models.
+#[derive(Debug)]
 pub struct SafetensorsLoader {
     /// Memory-mapped files, kept alive for mmap lifetime.
     files: Vec<MappedSafetensors>,
@@ -62,6 +64,7 @@ pub struct SafetensorsLoader {
 }
 
 /// Convert safetensors dtype string to our DType.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn parse_safetensors_dtype(dtype: safetensors::Dtype) -> DType {
     match dtype {
         safetensors::Dtype::F16 => DType::Float16,
@@ -79,7 +82,7 @@ impl SafetensorsLoader {
     ///
     /// Files are sorted by name to ensure deterministic loading order
     /// (important for multi-shard models like model-00001-of-00004.safetensors).
-    pub fn from_dir(model_dir: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_dir(model_dir: &Path) -> Result<Self, Box<dyn core::error::Error>> {
         let mut paths: Vec<PathBuf> = fs::read_dir(model_dir)?
             .filter_map(|entry| {
                 let entry = entry.ok()?;
@@ -112,6 +115,8 @@ impl SafetensorsLoader {
 
         for (file_idx, path) in paths.iter().enumerate() {
             let file = fs::File::open(path)?;
+            // Safety: `file` is kept alive by `MappedSafetensors` for the
+            // lifetime of the mmap; no other mutable access occurs.
             let mmap = unsafe { Mmap::map(&file)? };
 
             // Parse the safetensors header to build our index
@@ -156,11 +161,13 @@ impl SafetensorsLoader {
 
     /// Load from a single safetensors file.
     #[allow(dead_code)]
-    pub fn from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &Path) -> Result<Self, Box<dyn core::error::Error>> {
         let _parent = path.parent().unwrap_or(Path::new("."));
         // If a single file is specified, load just that directory
         // but we'll use the direct approach
         let file = fs::File::open(path)?;
+        // Safety: `file` stays alive for the duration of the mmap via
+        // the enclosing function's scope; no concurrent mutations.
         let mmap = unsafe { Mmap::map(&file)? };
 
         let st = SafeTensors::deserialize(&mmap)?;
@@ -189,7 +196,7 @@ impl SafetensorsLoader {
     fn get_safetensors(
         &self,
         file_idx: usize,
-    ) -> Result<SafeTensors<'_>, Box<dyn std::error::Error>> {
+    ) -> Result<SafeTensors<'_>, Box<dyn core::error::Error>> {
         Ok(SafeTensors::deserialize(&self.files[file_idx].mmap)?)
     }
 }
@@ -230,7 +237,7 @@ impl WeightLoader for SafetensorsLoader {
 pub fn load_weights(
     model: &mut Qwen3Model,
     loader: &dyn WeightLoader,
-) -> Result<WeightLoadStats, Box<dyn std::error::Error>> {
+) -> Result<WeightLoadStats, Box<dyn core::error::Error>> {
     let mut stats = WeightLoadStats::default();
 
     for tensor in model.weight_tensors_mut() {
@@ -430,7 +437,7 @@ pub fn load_weights_sharded(
     model: &mut Qwen3Model,
     loader: &dyn WeightLoader,
     parallel: &ParallelConfig,
-) -> Result<WeightLoadStats, Box<dyn std::error::Error>> {
+) -> Result<WeightLoadStats, Box<dyn core::error::Error>> {
     let mut stats = WeightLoadStats::default();
 
     // If no TP, fall back to standard loading
@@ -520,7 +527,7 @@ pub struct WeightLoadStats {
 pub fn upload_weights_to_device(
     model: &mut Qwen3Model,
     stream: &ascend::Stream,
-) -> Result<usize, Box<dyn std::error::Error>> {
+) -> Result<usize, Box<dyn core::error::Error>> {
     let mut uploaded = 0usize;
 
     for tensor in model.weight_tensors_mut() {

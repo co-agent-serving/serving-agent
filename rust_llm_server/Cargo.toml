@@ -56,5 +56,9 @@ pool_depth_2 = []
 pool_depth_3 = []
 pool_depth_4 = []
 
+[[example]]
+name = "hccl_smoke_test"
+required-features = ["ascend", "hccl"]
+
 [lints]
 workspace = true

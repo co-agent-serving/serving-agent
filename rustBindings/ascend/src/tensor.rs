@@ -1,6 +1,6 @@
 //! Safe aclTensor wrapper with RAII.
 
-use crate::error::{check_aclnn, Result};
+use crate::error::Result;
 use crate::memory::DeviceBuffer;
 use aclnn_sys::common::{AclDataType, AclFormat, AclTensor as RawAclTensor};
 use std::os::raw::c_void;
@@ -9,6 +9,7 @@ use std::os::raw::c_void;
 ///
 /// The tensor descriptor points to device memory managed by a `DeviceBuffer`.
 /// The descriptor is destroyed on drop.
+#[derive(Debug)]
 pub struct AclTensor {
     raw: *mut RawAclTensor,
     shape: Vec<i64>,

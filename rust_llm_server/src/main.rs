@@ -1,3 +1,9 @@
+// The binary inherits all library deps but doesn't directly use them in its own
+// compilation unit. Suppress unused-crate-dependencies for the binary target.
+#![allow(unused_crate_dependencies)]
+// Allow println! for the startup banner.
+#![allow(clippy::print_stdout)]
+
 use std::sync::Arc;
 
 use clap::Parser;
@@ -11,10 +17,10 @@ use rust_llm_server::model::weights::{self, SafetensorsLoader};
 use rust_llm_server::scheduler::Qwen3Tokenizer;
 use rust_llm_server::server::{AppState, serve};
 
-#[cfg(feature = "ascend")]
-use rust_llm_server::ops::ascend::AscendComputeOps;
 #[cfg(all(feature = "ascend", feature = "hccl"))]
 use rust_llm_server::distributed::process_group;
+#[cfg(feature = "ascend")]
+use rust_llm_server::ops::ascend::AscendComputeOps;
 #[cfg(all(feature = "ascend", feature = "hccl"))]
 use rust_llm_server::ops::ascend_comm::AscendCommOps;
 
@@ -76,7 +82,7 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Inject CANN HCCL workaround for AICPU exception 507018 on AllReduce/Broadcast
     // SAFETY: Called before any threads are spawned; single-threaded startup.
     unsafe {
@@ -263,8 +269,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("No --weights specified, running with uninitialized weights");
     }
 
-    // Create engine with compiled execution plan
+    // Create engine with compiled execution plan.
+    // `mut` is only needed when `hccl` is enabled (for distributed init below).
     #[cfg(feature = "ascend")]
+    #[cfg_attr(not(feature = "hccl"), allow(unused_mut))]
     let mut engine = if let Some(ascend_ops) = ascend_ops_init {
         Engine::new_ascend(model, ascend_ops, parallel.clone(), quant)
     } else {
@@ -276,29 +284,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize HCCL communicators for distributed execution
     #[cfg(all(feature = "ascend", feature = "hccl"))]
-    if let Some(ref dist) = distributed {
-        if !dist.is_single() && cli.backend == "ascend" {
-            let root_info_dir = std::path::Path::new("/tmp/hccl_root_info");
-            let groups = process_group::init_process_groups(dist, root_info_dir)
-                .map_err(|e| format!("Failed to init HCCL process groups: {}", e))?;
+    if let Some(ref dist) = distributed
+        && !dist.is_single()
+        && cli.backend == "ascend"
+    {
+        let root_info_dir = std::path::Path::new("/tmp/hccl_root_info");
+        let groups = process_group::init_process_groups(dist, root_info_dir)
+            .map_err(|e| format!("Failed to init HCCL process groups: {}", e))?;
 
-            // Use the compute stream for HCCL ops (like vLLM uses current_stream()).
-            // Using a separate comm stream causes AICPU exceptions (507018)
-            // because HCCL internally requires stream/context alignment.
-            let comm_stream = engine
-                .compute_stream()
-                .expect("compute stream required for HCCL comm ops");
-            let comm_ops = AscendCommOps::new(
-                groups.tp_comm,
-                groups.pp_comm,
-                comm_stream,
-            );
-            engine.set_comm_ops(comm_ops);
+        // Use the compute stream for HCCL ops (like vLLM uses current_stream()).
+        // Using a separate comm stream causes AICPU exceptions (507018)
+        // because HCCL internally requires stream/context alignment.
+        let comm_stream = engine
+            .compute_stream()
+            .expect("compute stream required for HCCL comm ops");
+        let comm_ops = AscendCommOps::new(groups.tp_comm, groups.pp_comm, comm_stream);
+        engine.set_comm_ops(comm_ops);
 
-            // Clean up root info files after all ranks have initialized
-            process_group::cleanup_root_info(root_info_dir);
-            tracing::info!("HCCL communicators initialized for distributed execution");
-        }
+        // Clean up root info files after all ranks have initialized
+        process_group::cleanup_root_info(root_info_dir);
+        tracing::info!("HCCL communicators initialized for distributed execution");
     }
 
     // Load tokenizer from weights directory
@@ -361,7 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(not(all(feature = "ascend", feature = "hccl")))]
         {
             // Non-HCCL build: park the thread (no computation to mirror)
-            std::future::pending::<()>().await;
+            core::future::pending::<()>().await;
         }
         return Ok(());
     }

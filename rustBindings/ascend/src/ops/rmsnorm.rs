@@ -1,18 +1,17 @@
 //! Safe RmsNorm wrapper.
 
-use crate::error::{check_aclnn, Result};
+use crate::error::{Result, check_aclnn};
 use crate::memory::DeviceBuffer;
 use crate::stream::Stream;
 use crate::tensor::AclTensor;
 use aclnn_sys::common::AclOpExecutor;
-use std::os::raw::c_void;
 
 /// RMS Layer Normalization: out = x * weight / sqrt(mean(x^2) + eps).
 ///
 /// # Arguments
 /// - `stream`: execution stream
-/// - `x`: input tensor [*, hidden_size]
-/// - `gamma`: weight tensor [hidden_size]
+/// - `x`: input tensor \[\*, hidden_size\]
+/// - `gamma`: weight tensor \[hidden_size\]
 /// - `epsilon`: numerical stability constant (typically 1e-6)
 /// - `y`: output tensor [*, hidden_size] (must be pre-allocated)
 pub fn rmsnorm(
@@ -38,9 +37,11 @@ pub fn rmsnorm(
     )?;
 
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
     // Stage 1: Get workspace size
+    // Safety: All tensor handles are valid; `rstd_tensor` is a valid AclTensor
+    // created just above. Output pointers are valid mutable references.
     check_aclnn(unsafe {
         aclnn_sys::rmsnorm::aclnnRmsNormGetWorkspaceSize(
             x.raw(),
@@ -63,9 +64,11 @@ pub fn rmsnorm(
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
     // Stage 2: Execute
+    // Safety: `executor` was initialized by GetWorkspaceSize; `ws_ptr` is valid
+    // device memory (or null); `stream.raw()` is a valid stream handle.
     check_aclnn(unsafe {
         aclnn_sys::rmsnorm::aclnnRmsNorm(ws_ptr, workspace_size, executor, stream.raw())
     })?;

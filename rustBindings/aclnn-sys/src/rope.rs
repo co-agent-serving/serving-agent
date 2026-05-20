@@ -12,7 +12,7 @@
 use super::common::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Get workspace size for RotaryPositionEmbedding.
     pub fn aclnnRotaryPositionEmbeddingGetWorkspaceSize(
         x: *const AclTensor,

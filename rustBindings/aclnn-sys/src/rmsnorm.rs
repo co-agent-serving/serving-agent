@@ -6,11 +6,11 @@
 use super::common::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Get workspace size for RmsNorm.
     ///
-    /// - `x`: input tensor [*, hidden_size]
-    /// - `gamma`: weight tensor [hidden_size]
+    /// - `x`: input tensor \[\*, hidden_size\]
+    /// - `gamma`: weight tensor \[hidden_size\]
     /// - `epsilon`: small constant for numerical stability
     /// - `y`: output tensor [*, hidden_size]
     /// - `rstd`: reciprocal standard deviation output (can be null if not needed)

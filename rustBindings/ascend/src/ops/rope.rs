@@ -2,7 +2,7 @@
 //!
 //! Applies RoPE to a single tensor (call once for Q, once for K).
 
-use crate::error::{check_aclnn, Result};
+use crate::error::{Result, check_aclnn};
 use crate::memory::DeviceBuffer;
 use crate::stream::Stream;
 use crate::tensor::AclTensor;
@@ -26,9 +26,10 @@ pub fn rotary_position_embedding(
     out: &mut AclTensor,
 ) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
     // Stage 1: Get workspace size
+    // Safety: All tensor handles are valid; `mode` is a valid i64 argument.
     check_aclnn(unsafe {
         aclnn_sys::rope::aclnnRotaryPositionEmbeddingGetWorkspaceSize(
             x.raw(),
@@ -51,9 +52,11 @@ pub fn rotary_position_embedding(
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
     // Stage 2: Execute
+    // Safety: `executor` was initialized by GetWorkspaceSize; `ws_ptr` is valid
+    // device memory (or null); `stream.raw()` is a valid stream handle.
     check_aclnn(unsafe {
         aclnn_sys::rope::aclnnRotaryPositionEmbedding(
             ws_ptr,

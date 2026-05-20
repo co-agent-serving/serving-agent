@@ -145,21 +145,24 @@ mod tests {
     #[test]
     fn test_quant_config_none() {
         let qc = QuantConfig::none();
-        assert!(!qc
-            .scheme_for("model.layers.0.self_attn.q_proj.weight")
-            .is_quantized());
+        assert!(
+            !qc.scheme_for("model.layers.0.self_attn.q_proj.weight")
+                .is_quantized()
+        );
         assert!(!qc.scheme_for("lm_head.weight").is_quantized());
     }
 
     #[test]
     fn test_quant_config_int8() {
         let qc = QuantConfig::int8_per_tensor();
-        assert!(qc
-            .scheme_for("model.layers.0.self_attn.q_proj.weight")
-            .is_quantized());
-        assert!(qc
-            .scheme_for("model.layers.0.mlp.gate_proj.weight")
-            .is_quantized());
+        assert!(
+            qc.scheme_for("model.layers.0.self_attn.q_proj.weight")
+                .is_quantized()
+        );
+        assert!(
+            qc.scheme_for("model.layers.0.mlp.gate_proj.weight")
+                .is_quantized()
+        );
         // LM head stays FP16
         assert!(!qc.scheme_for("lm_head.weight").is_quantized());
     }
@@ -169,7 +172,12 @@ mod tests {
         let qc = QuantConfig::awq_int4(128);
         match qc.scheme_for("model.layers.0.mlp.gate_proj.weight") {
             QuantScheme::GroupWise { group_size, .. } => assert_eq!(*group_size, 128),
-            other => panic!("Expected GroupWise, got {:?}", other),
+            QuantScheme::None | QuantScheme::PerTensor { .. } | QuantScheme::PerChannel { .. } => {
+                panic!(
+                    "Expected GroupWise, got {:?}",
+                    qc.scheme_for("model.layers.0.mlp.gate_proj.weight")
+                )
+            }
         }
     }
 }

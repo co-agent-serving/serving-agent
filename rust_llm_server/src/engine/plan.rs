@@ -5,9 +5,8 @@ use std::time::Instant;
 // ─── Cached environment variables (read once at process start) ─────────
 
 #[cfg(feature = "ascend")]
-pub(super) static PERF_BREAKDOWN: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    std::env::var("RUST_LLM_PERF_BREAKDOWN").map_or(false, |v| v == "1")
-});
+pub(super) static PERF_BREAKDOWN: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("RUST_LLM_PERF_BREAKDOWN").is_ok_and(|v| v == "1"));
 
 #[cfg(feature = "ascend")]
 pub(super) static PERF_SKIP_STEPS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
@@ -18,21 +17,18 @@ pub(super) static PERF_SKIP_STEPS: std::sync::LazyLock<usize> = std::sync::LazyL
 });
 
 #[cfg(feature = "ascend")]
-static TP_HP_MATMUL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    std::env::var("TP_HP_MATMUL").map_or(false, |v| v == "1")
-});
+static TP_HP_MATMUL: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("TP_HP_MATMUL").is_ok_and(|v| v == "1"));
 
 #[cfg(feature = "ascend")]
-static DUMP_DECODE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-    std::env::var("TP_DEBUG_DUMP_DECODE").map_or(false, |v| v == "1")
-});
+static DUMP_DECODE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("TP_DEBUG_DUMP_DECODE").is_ok_and(|v| v == "1"));
 
 use crate::model::config::Qwen3Config;
 use crate::model::network::Qwen3Model;
 use crate::model::parallel::ParallelConfig;
 use crate::model::quantize::{QuantConfig, QuantScheme};
 use crate::model::tensor::{DType, Tensor};
-
 
 // ─── Execution Step IR ─────────────────────────────────────────────────
 
@@ -77,7 +73,7 @@ pub enum ExecStep {
     },
     /// Per-head RMS normalization on Q or K (Qwen3 QK norm).
     /// Reshapes [B, S, num_heads*head_dim] → [B*S*num_heads, head_dim],
-    /// applies RMS norm with weight [head_dim], reshapes back.
+    /// applies RMS norm with weight `[head_dim]`, reshapes back.
     QKNorm {
         qk: TensorRef,
         weight: WeightRef,
@@ -184,9 +180,7 @@ struct WeightRegistry {
 
 impl WeightRegistry {
     fn new() -> Self {
-        Self {
-            names: Vec::new(),
-        }
+        Self { names: Vec::new() }
     }
 
     fn register(&mut self, tensor: &Tensor) -> WeightRef {
@@ -497,7 +491,9 @@ fn emit_matmul_or_dequant(
                     Tensor::new(vec![1], DType::Float32, format!("{weight_name}.zeros"));
                 Some(weights.register(&zeros_tensor))
             }
-            _ => None,
+            QuantScheme::None | QuantScheme::PerTensor { .. } | QuantScheme::PerChannel { .. } => {
+                None
+            }
         };
         steps.push(ExecStep::DequantMatMul {
             input,
@@ -560,6 +556,7 @@ fn dump_name_from_weight(name: &str) -> Option<(usize, &'static str)> {
 ///
 /// Created once at engine initialization, reused for every inference step.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct ExecutionPlan {
     /// Flat instruction sequence.
     pub steps: Vec<ExecStep>,
@@ -611,6 +608,7 @@ impl ExecutionPlan {
 /// Created once from an `ExecutionPlan`. Holds the plan metadata and
 /// executes steps by iterating through them with minimal overhead.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct CompiledPlan {
     plan: ExecutionPlan,
 }
@@ -620,6 +618,7 @@ pub struct CompiledPlan {
 /// Passed to `execute_paged()` to enable the Attention step to branch
 /// between Prefill (full FlashAttention) and Decode (PagedAttention).
 #[cfg(feature = "ascend")]
+#[derive(Debug)]
 pub struct PagedKVContext {
     /// True if this is a decode step (seq_len=1 per sequence).
     pub is_decode: bool,
@@ -629,12 +628,12 @@ pub struct PagedKVContext {
     pub block_table: Vec<i32>,
     /// Max blocks per sequence (second dim of block_table).
     pub max_blocks_per_seq: usize,
-    /// Slot mapping for reshape_and_cache: [num_new_tokens] global slot indices.
+    /// Slot mapping for reshape_and_cache: `num_new_tokens` global slot indices.
     pub slot_mapping: Vec<i32>,
     /// Block size (tokens per block).
     pub block_size: usize,
     /// Tracks which layer's attention we're currently processing.
-    pub layer_idx: std::cell::Cell<usize>,
+    pub layer_idx: core::cell::Cell<usize>,
 }
 
 #[cfg(feature = "ascend")]
@@ -668,27 +667,62 @@ impl<'a, 'b> ExecContext<'a, 'b> {
         dump_name_from_weight(self.weights[weight_idx].name())
     }
 
-    pub fn exec_step(&mut self, step: &ExecStep) {
+    pub(crate) fn exec_step(&mut self, step: &ExecStep) {
         match step {
-            ExecStep::Embedding { table_weight, out, .. } => self.exec_embedding(*table_weight, *out),
-            ExecStep::RmsNorm { input, weight, eps, out } => self.exec_rmsnorm(*input, *weight, *eps, *out),
+            ExecStep::Embedding {
+                table_weight, out, ..
+            } => self.exec_embedding(*table_weight, *out),
+            ExecStep::RmsNorm {
+                input,
+                weight,
+                eps,
+                out,
+            } => self.exec_rmsnorm(*input, *weight, *eps, *out),
             ExecStep::MatMul { a, b, out } => self.exec_matmul(*a, *b, *out),
-            ExecStep::RotaryEmb { q, k, rope_theta, head_dim, .. } => self.exec_rotary(*q, *k, *rope_theta, *head_dim),
-            ExecStep::QKNorm { qk, weight, num_heads, head_dim, eps } => self.exec_qknorm(*qk, *weight, *num_heads, *head_dim, *eps),
-            ExecStep::Attention { q, k, v, out, num_heads, num_kv_heads, head_dim } => self.exec_attention(*q, *k, *v, *out, *num_heads, *num_kv_heads, *head_dim),
+            ExecStep::RotaryEmb {
+                q,
+                k,
+                rope_theta,
+                head_dim,
+                ..
+            } => self.exec_rotary(*q, *k, *rope_theta, *head_dim),
+            ExecStep::QKNorm {
+                qk,
+                weight,
+                num_heads,
+                head_dim,
+                eps,
+            } => self.exec_qknorm(*qk, *weight, *num_heads, *head_dim, *eps),
+            ExecStep::Attention {
+                q,
+                k,
+                v,
+                out,
+                num_heads,
+                num_kv_heads,
+                head_dim,
+            } => self.exec_attention(*q, *k, *v, *out, *num_heads, *num_kv_heads, *head_dim),
             ExecStep::SiluMul { gate, up, out } => self.exec_silumul(*gate, *up, *out),
             ExecStep::Add { a, b } => self.exec_add(*a, *b),
             ExecStep::Sample { logits, .. } => self.exec_sample(*logits),
             ExecStep::AllReduceSum { tensor } => self.exec_allreduce(*tensor),
             ExecStep::Send { tensor, dst_rank } => self.exec_send(*tensor, *dst_rank),
-            ExecStep::Recv { tensor, src_rank, .. } => self.exec_recv(*tensor, *src_rank),
-            ExecStep::DequantMatMul { .. } => tracing::warn!("execute_paged: DequantMatMul not implemented"),
+            ExecStep::Recv {
+                tensor, src_rank, ..
+            } => self.exec_recv(*tensor, *src_rank),
+            ExecStep::DequantMatMul { .. } => {
+                tracing::warn!("execute_paged: DequantMatMul not implemented")
+            }
         }
     }
 
     fn exec_embedding(&mut self, table_weight: usize, out: usize) {
-        let arena = self.use_arena.then(|| self.rotating_pool.arena_for_layer(0));
-        let result = self.ops.embedding(self.input_ids, &self.weights[table_weight], arena);
+        let arena = self
+            .use_arena
+            .then(|| self.rotating_pool.arena_for_layer(0));
+        let result = self
+            .ops
+            .embedding(self.input_ids, &self.weights[table_weight], arena);
         self.pool.put(out, result);
         if let Some(ref mut d) = self.dumper {
             d.dump("layer0_00_embedding", self.pool.get(out), self.ops.stream());
@@ -696,14 +730,20 @@ impl<'a, 'b> ExecContext<'a, 'b> {
     }
 
     fn exec_rmsnorm(&mut self, input: usize, weight: usize, eps: f32, out: usize) {
-        let result = self.ops.rms_norm(self.pool.get(input), &self.weights[weight], eps);
+        let result = self
+            .ops
+            .rms_norm(self.pool.get(input), &self.weights[weight], eps);
         self.pool.put(out, result);
         let dump_info = self.dump_name(weight);
         let is_final = self.weights[weight].name().contains("model.norm");
         if let Some(ref mut d) = self.dumper {
             if let Some((layer, step_name)) = dump_info {
                 if d.should_dump(layer) {
-                    d.dump(&format!("layer{layer}_{step_name}"), self.pool.get(out), self.ops.stream());
+                    d.dump(
+                        &format!("layer{layer}_{step_name}"),
+                        self.pool.get(out),
+                        self.ops.stream(),
+                    );
                 }
             } else if is_final {
                 d.dump("final_norm", self.pool.get(out), self.ops.stream());
@@ -712,18 +752,18 @@ impl<'a, 'b> ExecContext<'a, 'b> {
     }
 
     fn exec_matmul(&mut self, a: usize, b: usize, out: usize) {
-        let use_hp = self.comm_ops.is_some()
-            && *TP_HP_MATMUL
-            && {
-                let name = self.weights[b].name();
-                name.contains("o_proj") || name.contains("down_proj")
-            };
+        let use_hp = self.comm_ops.is_some() && *TP_HP_MATMUL && {
+            let name = self.weights[b].name();
+            name.contains("o_proj") || name.contains("down_proj")
+        };
 
         let result = if use_hp {
             let (tensor, temps) = self.ops.matmul_hp(self.pool.get(a), &self.weights[b]);
             if self.use_arena {
                 let layer = self.current_layer_arena_idx.unwrap_or(0);
-                self.rotating_pool.arena_for_layer(layer).defer_owned_many(temps);
+                self.rotating_pool
+                    .arena_for_layer(layer)
+                    .defer_owned_many(temps);
             } else {
                 self.pool.defer_buffers(temps);
             }
@@ -738,7 +778,11 @@ impl<'a, 'b> ExecContext<'a, 'b> {
         if let Some(ref mut d) = self.dumper {
             if let Some((layer, step_name)) = dump_info {
                 if d.should_dump(layer) {
-                    d.dump(&format!("layer{layer}_{step_name}"), self.pool.get(out), self.ops.stream());
+                    d.dump(
+                        &format!("layer{layer}_{step_name}"),
+                        self.pool.get(out),
+                        self.ops.stream(),
+                    );
                 }
             } else if is_lm {
                 d.dump("lm_head_out", self.pool.get(out), self.ops.stream());
@@ -749,35 +793,82 @@ impl<'a, 'b> ExecContext<'a, 'b> {
     fn exec_rotary(&mut self, q: usize, k: usize, rope_theta: f64, head_dim: usize) {
         let q_tensor = self.pool.take(q);
         let k_tensor = self.pool.take(k);
-        let arena = self.use_arena.then(|| self.rotating_pool.arena_for_layer(self.paged_ctx.layer_idx.get()));
-        let (q_out, k_out) = self.ops.rotary_embedding(q_tensor, k_tensor, self.positions, rope_theta, head_dim, arena);
+        let arena = self.use_arena.then(|| {
+            self.rotating_pool
+                .arena_for_layer(self.paged_ctx.layer_idx.get())
+        });
+        let (q_out, k_out) = self.ops.rotary_embedding(
+            q_tensor,
+            k_tensor,
+            self.positions,
+            rope_theta,
+            head_dim,
+            arena,
+        );
         self.pool.put(q, q_out);
         self.pool.put(k, k_out);
         if let Some(ref mut d) = self.dumper {
             let layer = self.paged_ctx.layer_idx.get();
             if d.should_dump(layer) {
-                d.dump(&format!("layer{layer}_07_q_rope"), self.pool.get(q), self.ops.stream());
-                d.dump(&format!("layer{layer}_08_k_rope"), self.pool.get(k), self.ops.stream());
+                d.dump(
+                    &format!("layer{layer}_07_q_rope"),
+                    self.pool.get(q),
+                    self.ops.stream(),
+                );
+                d.dump(
+                    &format!("layer{layer}_08_k_rope"),
+                    self.pool.get(k),
+                    self.ops.stream(),
+                );
             }
         }
     }
 
-    fn exec_qknorm(&mut self, qk: usize, weight: usize, num_heads: usize, head_dim: usize, eps: f32) {
+    fn exec_qknorm(
+        &mut self,
+        qk: usize,
+        weight: usize,
+        num_heads: usize,
+        head_dim: usize,
+        eps: f32,
+    ) {
         let tensor = self.pool.take(qk);
-        let arena = self.use_arena.then(|| self.rotating_pool.arena_for_layer(self.paged_ctx.layer_idx.get()));
-        let result = self.ops.qk_norm(tensor, &self.weights[weight], num_heads, head_dim, eps, arena);
+        let arena = self.use_arena.then(|| {
+            self.rotating_pool
+                .arena_for_layer(self.paged_ctx.layer_idx.get())
+        });
+        let result = self.ops.qk_norm(
+            tensor,
+            &self.weights[weight],
+            num_heads,
+            head_dim,
+            eps,
+            arena,
+        );
         self.pool.put(qk, result);
         let dump_info = self.dump_name(weight);
-        if let Some(ref mut d) = self.dumper {
-            if let Some((layer, step_name)) = dump_info {
-                if d.should_dump(layer) {
-                    d.dump(&format!("layer{layer}_{step_name}"), self.pool.get(qk), self.ops.stream());
-                }
-            }
+        if let Some(ref mut d) = self.dumper
+            && let Some((layer, step_name)) = dump_info
+            && d.should_dump(layer)
+        {
+            d.dump(
+                &format!("layer{layer}_{step_name}"),
+                self.pool.get(qk),
+                self.ops.stream(),
+            );
         }
     }
 
-    fn exec_attention(&mut self, q: usize, k: usize, v: usize, out: usize, num_heads: usize, num_kv_heads: usize, head_dim: usize) {
+    fn exec_attention(
+        &mut self,
+        q: usize,
+        k: usize,
+        v: usize,
+        out: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+    ) {
         let layer = self.paged_ctx.layer_idx.get();
 
         if layer < self.kv_key_caches.len() {
@@ -793,7 +884,8 @@ impl<'a, 'b> ExecContext<'a, 'b> {
         }
 
         let result = if self.paged_ctx.is_decode && layer < self.kv_key_caches.len() {
-            let num_blocks = self.kv_key_caches[layer].size() / (self.paged_ctx.block_size * num_kv_heads * head_dim * 2);
+            let num_blocks = self.kv_key_caches[layer].size()
+                / (self.paged_ctx.block_size * num_kv_heads * head_dim * 2);
             self.ops.paged_decode_attention(
                 self.pool.get(q),
                 &self.kv_key_caches[layer],
@@ -806,10 +898,14 @@ impl<'a, 'b> ExecContext<'a, 'b> {
                 &self.paged_ctx.block_table,
                 self.paged_ctx.max_blocks_per_seq,
                 self.paged_ctx.context_len,
-                self.decode_buffers.as_deref_mut().expect("decode requires DecodeBuffers"),
+                self.decode_buffers
+                    .as_deref_mut()
+                    .expect("decode requires DecodeBuffers"),
             )
         } else {
-            let arena = self.use_arena.then(|| self.rotating_pool.arena_for_layer(layer));
+            let arena = self
+                .use_arena
+                .then(|| self.rotating_pool.arena_for_layer(layer));
             self.ops.attention(
                 self.pool.get(q),
                 self.pool.get(k),
@@ -822,10 +918,14 @@ impl<'a, 'b> ExecContext<'a, 'b> {
         };
         self.pool.put(out, result);
 
-        if let Some(ref mut d) = self.dumper {
-            if d.should_dump(layer) {
-                d.dump(&format!("layer{layer}_09_attn_out"), self.pool.get(out), self.ops.stream());
-            }
+        if let Some(ref mut d) = self.dumper
+            && d.should_dump(layer)
+        {
+            d.dump(
+                &format!("layer{layer}_09_attn_out"),
+                self.pool.get(out),
+                self.ops.stream(),
+            );
         }
 
         self.allreduce_in_layer = 0;
@@ -840,15 +940,23 @@ impl<'a, 'b> ExecContext<'a, 'b> {
     }
 
     fn exec_silumul(&mut self, gate: usize, up: usize, out: usize) {
-        let arena = self.use_arena.then(|| self.rotating_pool.arena_for_layer(self.current_layer_arena_idx.unwrap_or(0)));
-        let result = self.ops.silu_mul(self.pool.get(gate), self.pool.get(up), arena);
+        let arena = self.use_arena.then(|| {
+            self.rotating_pool
+                .arena_for_layer(self.current_layer_arena_idx.unwrap_or(0))
+        });
+        let result = self
+            .ops
+            .silu_mul(self.pool.get(gate), self.pool.get(up), arena);
         self.pool.put(out, result);
-        if let Some(ref mut d) = self.dumper {
-            if let Some(layer) = self.last_attention_layer {
-                if d.should_dump(layer) {
-                    d.dump(&format!("layer{layer}_16_silu_mul"), self.pool.get(out), self.ops.stream());
-                }
-            }
+        if let Some(ref mut d) = self.dumper
+            && let Some(layer) = self.last_attention_layer
+            && d.should_dump(layer)
+        {
+            d.dump(
+                &format!("layer{layer}_16_silu_mul"),
+                self.pool.get(out),
+                self.ops.stream(),
+            );
         }
     }
 
@@ -856,20 +964,31 @@ impl<'a, 'b> ExecContext<'a, 'b> {
         let tensor_a = self.pool.take(a);
         let result = self.ops.add(tensor_a, self.pool.get(b));
         self.pool.put(a, result);
-        if let Some(ref mut d) = self.dumper {
-            if let Some(layer) = self.last_attention_layer {
-                if d.should_dump(layer) {
-                    let step = if self.add_in_layer == 0 { "12_residual_attn" } else { "19_residual_ffn" };
-                    d.dump(&format!("layer{layer}_{step}"), self.pool.get(a), self.ops.stream());
-                }
-            }
+        if let Some(ref mut d) = self.dumper
+            && let Some(layer) = self.last_attention_layer
+            && d.should_dump(layer)
+        {
+            let step = if self.add_in_layer == 0 {
+                "12_residual_attn"
+            } else {
+                "19_residual_ffn"
+            };
+            d.dump(
+                &format!("layer{layer}_{step}"),
+                self.pool.get(a),
+                self.ops.stream(),
+            );
         }
         self.add_in_layer += 1;
     }
 
     fn exec_sample(&mut self, logits: usize) {
         if let Some(ref mut d) = self.dumper {
-            d.dump("logits_pre_sample", self.pool.get(logits), self.ops.stream());
+            d.dump(
+                "logits_pre_sample",
+                self.pool.get(logits),
+                self.ops.stream(),
+            );
         }
         self.sampled_token = self.ops.sample_argmax(self.pool.get(logits));
     }
@@ -879,10 +998,14 @@ impl<'a, 'b> ExecContext<'a, 'b> {
             let is_fp32 = self.pool.get(tensor).dtype() == crate::model::tensor::DType::Float32;
             if is_fp32 {
                 let fp32_tensor = self.pool.take(tensor);
-                let bf16_result = self.ops.cast_device_tensor(&fp32_tensor, crate::model::tensor::DType::BFloat16);
+                let bf16_result = self
+                    .ops
+                    .cast_device_tensor(&fp32_tensor, crate::model::tensor::DType::BFloat16);
                 if self.use_arena {
                     let layer = self.current_layer_arena_idx.unwrap_or(0);
-                    self.rotating_pool.arena_for_layer(layer).defer_owned(fp32_tensor.into_buf());
+                    self.rotating_pool
+                        .arena_for_layer(layer)
+                        .defer_owned(fp32_tensor.into_buf());
                 } else {
                     self.pool.defer_buffers(vec![fp32_tensor.into_buf()]);
                 }
@@ -896,13 +1019,20 @@ impl<'a, 'b> ExecContext<'a, 'b> {
                 self.pool.release_deferred_after_sync();
             }
 
-            if let Some(ref mut d) = self.dumper {
-                if let Some(layer) = self.last_attention_layer {
-                    if d.should_dump(layer) {
-                        let step = if self.allreduce_in_layer == 0 { "11_o_proj_allreduce" } else { "18_down_proj_allreduce" };
-                        d.dump(&format!("layer{layer}_{step}"), self.pool.get(tensor), self.ops.stream());
-                    }
-                }
+            if let Some(ref mut d) = self.dumper
+                && let Some(layer) = self.last_attention_layer
+                && d.should_dump(layer)
+            {
+                let step = if self.allreduce_in_layer == 0 {
+                    "11_o_proj_allreduce"
+                } else {
+                    "18_down_proj_allreduce"
+                };
+                d.dump(
+                    &format!("layer{layer}_{step}"),
+                    self.pool.get(tensor),
+                    self.ops.stream(),
+                );
             }
         } else {
             tracing::warn!("AllReduceSum: no comm ops configured, skipping");
@@ -973,8 +1103,8 @@ impl CompiledPlan {
         }
 
         let use_arena = POOL_DEPTH > 1;
-        static ARENA_STATS_LOGGED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
+        static ARENA_STATS_LOGGED: core::sync::atomic::AtomicBool =
+            core::sync::atomic::AtomicBool::new(false);
 
         let dump_decode = *DUMP_DECODE;
         let mut dumper = if !paged_ctx.is_decode || dump_decode {
@@ -1015,7 +1145,7 @@ impl CompiledPlan {
             d.finalize();
         }
 
-        if use_arena && !ARENA_STATS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if use_arena && !ARENA_STATS_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
             tracing::info!("RotatingPool arena stats after first forward pass:");
             ctx.rotating_pool.log_stats();
         }
@@ -1170,25 +1300,5 @@ mod tests {
 
         // LM head should still be plain MatMul (excluded from INT8)
         // (Last MatMul before Sample should be plain MatMul)
-    }
-
-    #[cfg(feature = "ascend")]
-    #[test]
-    fn test_execute_plan_no_panic() {
-        use crate::model::device_tensor::TensorPool;
-
-        let config = Qwen3Config::qwen3_0_6b();
-        let model = Qwen3Model::new(config.clone());
-        let parallel = ParallelConfig::single_device();
-        let quant = QuantConfig::none();
-
-        let plan = compile_plan(&model, &parallel, &quant);
-        let compiled = plan.compile();
-        let mut pool = TensorPool::new(compiled.plan().num_buffers);
-        let mut kv_cache = SequenceKVCache::new(&config, 2048);
-
-        let token = compiled.execute(&ops, &mut pool, &[1, 2, 3], &[0, 1, 2], &mut kv_cache);
-
-        assert_eq!(token, 0); // StubOps returns 0
     }
 }

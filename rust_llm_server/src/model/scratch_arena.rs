@@ -55,7 +55,11 @@ pub const POOL_DEPTH: usize = 3;
 #[cfg(feature = "pool_depth_4")]
 pub const POOL_DEPTH: usize = 4;
 
-#[cfg(not(any(feature = "pool_depth_2", feature = "pool_depth_3", feature = "pool_depth_4")))]
+#[cfg(not(any(
+    feature = "pool_depth_2",
+    feature = "pool_depth_3",
+    feature = "pool_depth_4"
+)))]
 pub const POOL_DEPTH: usize = 1;
 
 // ─── ScratchArena ──────────────────────────────────────────────────────
@@ -77,6 +81,7 @@ pub const POOL_DEPTH: usize = 1;
 /// When the arena is `reset()`, both the allocation cursor and the
 /// deferred-owned list are cleared.
 #[cfg(feature = "ascend")]
+#[derive(Debug)]
 pub struct ScratchArena {
     /// Cached device buffers, grown lazily.
     buffers: Vec<DeviceBuffer>,
@@ -119,10 +124,7 @@ impl ScratchArena {
             // Fast path: reuse existing buffer if large enough
             if self.buffers[self.cursor].size() >= size_bytes {
                 let buf = unsafe {
-                    DeviceBuffer::from_raw_non_owning(
-                        self.buffers[self.cursor].ptr(),
-                        size_bytes,
-                    )
+                    DeviceBuffer::from_raw_non_owning(self.buffers[self.cursor].ptr(), size_bytes)
                 };
                 self.cursor += 1;
                 return buf;
@@ -134,10 +136,7 @@ impl ScratchArena {
             // drained all ops from the previous user of this arena slot).
             self.buffers[self.cursor] = new_buf;
             let buf = unsafe {
-                DeviceBuffer::from_raw_non_owning(
-                    self.buffers[self.cursor].ptr(),
-                    size_bytes,
-                )
+                DeviceBuffer::from_raw_non_owning(self.buffers[self.cursor].ptr(), size_bytes)
             };
             self.cursor += 1;
             buf
@@ -145,9 +144,7 @@ impl ScratchArena {
             // Cold path: first forward pass — allocate and cache
             let new_buf = DeviceBuffer::alloc(size_bytes)
                 .expect("ScratchArena: failed to allocate new device buffer");
-            let view = unsafe {
-                DeviceBuffer::from_raw_non_owning(new_buf.ptr(), size_bytes)
-            };
+            let view = unsafe { DeviceBuffer::from_raw_non_owning(new_buf.ptr(), size_bytes) };
             self.buffers.push(new_buf);
             self.cursor += 1;
             view
@@ -205,6 +202,13 @@ impl ScratchArena {
     }
 }
 
+#[cfg(feature = "ascend")]
+impl Default for ScratchArena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── RotatingPool ──────────────────────────────────────────────────────
 
 /// N-way rotating pool of scratch arenas.
@@ -218,6 +222,7 @@ impl ScratchArena {
 /// Special case: `POOL_DEPTH == 1` means every layer resets and syncs
 /// (fallback to the old per-layer-sync behaviour).
 #[cfg(feature = "ascend")]
+#[derive(Debug)]
 pub struct RotatingPool {
     arenas: Vec<ScratchArena>,
 }
@@ -242,6 +247,7 @@ impl RotatingPool {
     /// Subsequent calls with the same `layer_idx` return the arena as-is,
     /// preserving buffers from earlier operators in the same layer.
     pub fn arena_for_layer(&mut self, layer_idx: usize) -> &mut ScratchArena {
+        #[allow(clippy::modulo_one)]
         let idx = layer_idx % POOL_DEPTH;
         if self.arenas[idx].last_layer != Some(layer_idx) {
             // New layer is taking over this arena — reset it.
@@ -272,6 +278,13 @@ impl RotatingPool {
                 arena.total_bytes() as f64 / 1e6,
             );
         }
+    }
+}
+
+#[cfg(feature = "ascend")]
+impl Default for RotatingPool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

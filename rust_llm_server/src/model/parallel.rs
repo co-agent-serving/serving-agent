@@ -129,6 +129,7 @@ pub enum ShardStrategy {
 /// - gate_proj, up_proj: shard columns
 /// - down_proj: shard rows
 /// - LayerNorm / RMSNorm weights: replicate
+#[derive(Debug)]
 pub struct Qwen3ShardMap;
 
 impl Qwen3ShardMap {
@@ -182,7 +183,7 @@ pub fn shard_weight_shape(
             let mut shape = logical_shape.to_vec();
             let last = shape.last_mut().expect("empty shape");
             assert!(
-                *last % tp_size == 0,
+                (*last).is_multiple_of(tp_size),
                 "cols {} not divisible by tp_size {}",
                 *last,
                 tp_size
@@ -195,7 +196,7 @@ pub fn shard_weight_shape(
             let mut shape = logical_shape.to_vec();
             let first = shape.first_mut().expect("empty shape");
             assert!(
-                *first % tp_size == 0,
+                (*first).is_multiple_of(tp_size),
                 "rows {} not divisible by tp_size {}",
                 *first,
                 tp_size

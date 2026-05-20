@@ -7,7 +7,7 @@ use std::os::raw::c_void;
 
 // ─── Softmax ───────────────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Softmax workspace.
     /// Computes: out = softmax(self, dim)
     pub fn aclnnSoftmaxGetWorkspaceSize(
@@ -29,7 +29,7 @@ extern "C" {
 
 // ─── ArgMax ────────────────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: ArgMax workspace.
     /// Returns the index of the maximum value along `dim`.
     pub fn aclnnArgMaxGetWorkspaceSize(

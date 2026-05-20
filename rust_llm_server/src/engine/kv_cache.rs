@@ -69,6 +69,7 @@ impl SequenceKVCache {
 
 /// Manager for all active sequence KV caches.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct KVCacheManager {
     config: Qwen3Config,
     max_seq_len: usize,

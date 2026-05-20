@@ -1,12 +1,13 @@
 //! Device memory management with RAII.
 
-use crate::error::{check_acl, AscendError, Result};
+use crate::error::{AscendError, Result, check_acl};
 use ascendcl_sys::{AclrtMemMallocPolicy, AclrtMemcpyKind};
 use std::os::raw::c_void;
 
 /// RAII wrapper around device memory allocated via `aclrtMalloc`.
 ///
 /// Frees the memory automatically on drop (if `owned` is true).
+#[derive(Debug)]
 pub struct DeviceBuffer {
     ptr: *mut c_void,
     size: usize,
@@ -20,13 +21,15 @@ impl DeviceBuffer {
     pub fn alloc(size: usize) -> Result<Self> {
         if size == 0 {
             return Ok(Self {
-                ptr: std::ptr::null_mut(),
+                ptr: core::ptr::null_mut(),
                 size: 0,
                 owned: true,
             });
         }
 
-        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        // Safety: `ptr` is a valid mutable reference; `aclrtMalloc` is
+        // documented as thread-safe and will initialize `ptr` on success.
         check_acl(unsafe {
             ascendcl_sys::aclrtMalloc(&mut ptr, size, AclrtMemMallocPolicy::Normal)
         })?;
@@ -40,7 +43,9 @@ impl DeviceBuffer {
 
     /// Create a non-owning view of existing device memory.
     ///
-    /// SAFETY: The caller must ensure the pointer remains valid for the
+    /// # Safety
+    ///
+    /// The caller must ensure the pointer remains valid for the
     /// lifetime of this DeviceBuffer. The memory will NOT be freed on drop.
     /// Used for weight tensors whose memory is owned by the model's Tensors.
     pub unsafe fn from_raw_non_owning(ptr: *mut c_void, size: usize) -> Self {
@@ -60,6 +65,9 @@ impl DeviceBuffer {
                 self.size
             )));
         }
+        // Safety: `self.ptr` points to valid device memory of at least
+        // `self.size` bytes; `data.as_ptr()` points to valid host memory;
+        // `data.len()` ≤ `self.size` was checked above.
         check_acl(unsafe {
             ascendcl_sys::aclrtMemcpy(
                 self.ptr,
@@ -80,6 +88,9 @@ impl DeviceBuffer {
                 self.size
             )));
         }
+        // Safety: `buf.as_mut_ptr()` points to valid host memory of at
+        // least `buf.len()` bytes; `self.ptr` points to valid device memory;
+        // the size check above ensures we don't read past the device buffer.
         check_acl(unsafe {
             ascendcl_sys::aclrtMemcpy(
                 buf.as_mut_ptr() as *mut c_void,
@@ -96,6 +107,8 @@ impl DeviceBuffer {
         if self.size == 0 {
             return Ok(());
         }
+        // Safety: `self.ptr` points to valid device memory of at least
+        // `self.size` bytes; `aclrtMemset` will write `self.size` zero bytes.
         check_acl(unsafe { ascendcl_sys::aclrtMemset(self.ptr, self.size, 0, self.size) })
     }
 
@@ -122,6 +135,9 @@ impl DeviceBuffer {
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
         if self.owned && !self.ptr.is_null() {
+            // Safety: `self.ptr` was allocated by `aclrtMalloc` in `alloc()`,
+            // and the `owned` flag guarantees we have exclusive responsibility
+            // for freeing it. Null pointers are checked above.
             unsafe {
                 let _ = ascendcl_sys::aclrtFree(self.ptr);
             }

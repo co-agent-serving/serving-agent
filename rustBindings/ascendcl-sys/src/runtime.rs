@@ -5,7 +5,7 @@
 use super::types::*;
 use std::os::raw::{c_char, c_int};
 
-extern "C" {
+unsafe extern "C" {
     // ─── SDK Lifecycle ──────────────────────────────────────────────
 
     /// Initialize AscendCL. Must be called before any other ACL function.
@@ -76,5 +76,5 @@ extern "C" {
 
     /// Elapsed time in milliseconds between two events.
     pub fn aclrtEventElapsedTime(time_ms: *mut f32, start: AclrtEvent, end: AclrtEvent)
-        -> AclError;
+    -> AclError;
 }

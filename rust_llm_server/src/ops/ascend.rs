@@ -39,6 +39,7 @@ fn shape_i64(shape: &[usize]) -> Vec<i64> {
 ///
 /// Eliminates per-layer per-step `aclrtMalloc`/`aclrtFree` calls by
 /// reusing these buffers across all layers and decode steps.
+#[derive(Debug)]
 pub struct DecodeBuffers {
     /// Block table device buffer: [1, max_blocks_per_seq] INT32.
     pub block_table_buf: DeviceBuffer,
@@ -55,10 +56,12 @@ pub struct DecodeBuffers {
 /// Holds the device guard and a compute stream. All operator calls
 /// are enqueued on this stream and use typed DeviceTensor/WeightTensor
 /// for RAII-safe device memory management.
+#[derive(Debug)]
 pub struct AscendComputeOps {
     #[allow(dead_code)]
     device: Device,
     stream: Stream,
+    #[allow(dead_code)]
     device_id: i32,
     /// ACL context captured after Device::init. Used by ensure_device_context()
     /// to share the context across threads via aclrtSetCurrentContext.
@@ -168,7 +171,7 @@ impl AscendComputeOps {
     /// was initialized under this context, and using a different implicit
     /// context (created by `aclrtSetDevice`) causes AICPU exceptions.
     fn ensure_device_context(&self) {
-        use std::cell::Cell;
+        use core::cell::Cell;
         thread_local! {
             static CONTEXT_SET: Cell<bool> = const { Cell::new(false) };
         }
@@ -249,7 +252,11 @@ impl AscendComputeOps {
     /// alive until a stream synchronization point. The buffers back the async cast
     /// and matmul operations enqueued on the stream — dropping them prematurely
     /// causes `aclrtFree` to reclaim memory that the stream is still reading.
-    pub fn matmul_hp(&self, a: &DeviceTensor, b: &WeightTensor) -> (DeviceTensor, Vec<DeviceBuffer>) {
+    pub fn matmul_hp(
+        &self,
+        a: &DeviceTensor,
+        b: &WeightTensor,
+    ) -> (DeviceTensor, Vec<DeviceBuffer>) {
         self.ensure_device_context();
 
         let acl_a = Self::wrap_device(a);
@@ -272,13 +279,16 @@ impl AscendComputeOps {
 
         let a_fp32_buf = ascend::DeviceBuffer::alloc(a_numel * 4).expect("matmul_hp: alloc a_fp32");
         let b_fp32_buf = ascend::DeviceBuffer::alloc(b_numel * 4).expect("matmul_hp: alloc b_fp32");
-        let out_fp32_buf = ascend::DeviceBuffer::alloc(out_numel * 4).expect("matmul_hp: alloc out_fp32");
+        let out_fp32_buf =
+            ascend::DeviceBuffer::alloc(out_numel * 4).expect("matmul_hp: alloc out_fp32");
 
         use aclnn_sys::common::AclDataType;
-        let mut a_fp32 = ascend::tensor::AclTensor::new(acl_a.shape(), AclDataType::Float, &a_fp32_buf)
-            .expect("matmul_hp: create a_fp32");
-        let mut b_fp32 = ascend::tensor::AclTensor::new(acl_b.shape(), AclDataType::Float, &b_fp32_buf)
-            .expect("matmul_hp: create b_fp32");
+        let mut a_fp32 =
+            ascend::tensor::AclTensor::new(acl_a.shape(), AclDataType::Float, &a_fp32_buf)
+                .expect("matmul_hp: create a_fp32");
+        let mut b_fp32 =
+            ascend::tensor::AclTensor::new(acl_b.shape(), AclDataType::Float, &b_fp32_buf)
+                .expect("matmul_hp: create b_fp32");
 
         ascend::ops::elementwise::cast(&self.stream, &acl_a, AclDataType::Float, &mut a_fp32)
             .expect("matmul_hp: cast a");
@@ -287,8 +297,9 @@ impl AscendComputeOps {
 
         // FP32 matmul — output stays FP32
         let out_shape_i64: Vec<i64> = out_shape.iter().map(|&s| s as i64).collect();
-        let mut acl_out = ascend::tensor::AclTensor::new(&out_shape_i64, AclDataType::Float, &out_fp32_buf)
-            .expect("matmul_hp: create out_fp32");
+        let mut acl_out =
+            ascend::tensor::AclTensor::new(&out_shape_i64, AclDataType::Float, &out_fp32_buf)
+                .expect("matmul_hp: create out_fp32");
 
         ascend::ops::matmul::matmul(&self.stream, &a_fp32, &b_fp32, &mut acl_out)
             .expect("matmul_hp: FP32 matmul failed");
@@ -306,7 +317,11 @@ impl AscendComputeOps {
     /// Cast a DeviceTensor to a different dtype.
     ///
     /// Used to downcast FP32 → BF16 after AllReduce in the high-precision path.
-    pub fn cast_device_tensor(&self, input: &DeviceTensor, target_dtype: crate::model::tensor::DType) -> DeviceTensor {
+    pub fn cast_device_tensor(
+        &self,
+        input: &DeviceTensor,
+        target_dtype: crate::model::tensor::DType,
+    ) -> DeviceTensor {
         self.ensure_device_context();
 
         let acl_input = Self::wrap_device(input);
@@ -315,7 +330,13 @@ impl AscendComputeOps {
             crate::model::tensor::DType::BFloat16 => aclnn_sys::common::AclDataType::BFloat16,
             crate::model::tensor::DType::Float16 => aclnn_sys::common::AclDataType::Float16,
             crate::model::tensor::DType::Float32 => aclnn_sys::common::AclDataType::Float,
-            _ => panic!("cast_device_tensor: unsupported target dtype {:?}", target_dtype),
+            crate::model::tensor::DType::Int32
+            | crate::model::tensor::DType::Uint32
+            | crate::model::tensor::DType::Int8
+            | crate::model::tensor::DType::Int4 => panic!(
+                "cast_device_tensor: unsupported target dtype {:?}",
+                target_dtype
+            ),
         };
 
         let out = DeviceTensor::alloc(input.shape().to_vec(), target_dtype, "cast_out")
@@ -338,7 +359,7 @@ impl AscendComputeOps {
             .expect("rms_norm: alloc output");
         let mut acl_y = Self::wrap_device(&out);
 
-        ascend::ops::rmsnorm::rmsnorm(&self.stream, &acl_x, &acl_w, eps as f64, &mut acl_y)
+        ascend::ops::rmsnorm::rmsnorm(&self.stream, &acl_x, &acl_w, f64::from(eps), &mut acl_y)
             .unwrap_or_else(|e| {
                 let (free, total) = self.device.memory_info().unwrap_or((0, 0));
                 panic!(
@@ -357,7 +378,7 @@ impl AscendComputeOps {
         _num_heads: usize,
         head_dim: usize,
         eps: f32,
-        mut arena: Option<&mut crate::model::scratch_arena::ScratchArena>,
+        arena: Option<&mut crate::model::scratch_arena::ScratchArena>,
     ) -> DeviceTensor {
         self.ensure_device_context();
 
@@ -374,7 +395,7 @@ impl AscendComputeOps {
         let mut acl_y = AclTensor::new(&reshaped_shape, to_acl_dtype(qk.dtype()), &out_buf)
             .expect("qk_norm: output tensor");
 
-        ascend::ops::rmsnorm::rmsnorm(&self.stream, &acl_x, &acl_w, eps as f64, &mut acl_y)
+        ascend::ops::rmsnorm::rmsnorm(&self.stream, &acl_x, &acl_w, f64::from(eps), &mut acl_y)
             .unwrap_or_else(|e| {
                 panic!(
                     "qk_norm: aclnnRmsNorm failed: {:?}\n  shape={:?}, reshaped={:?}, n_groups={}, head_dim={}",
@@ -430,26 +451,45 @@ impl AscendComputeOps {
         // Convert to the model's 16-bit dtype
         let to_16bit = |table: &[f32]| -> Vec<u16> {
             match dtype {
-                DType::BFloat16 => table.iter().map(|&v| half::bf16::from_f32(v).to_bits()).collect(),
-                _ => table.iter().map(|&v| half::f16::from_f32(v).to_bits()).collect(),
+                DType::BFloat16 => table
+                    .iter()
+                    .map(|&v| half::bf16::from_f32(v).to_bits())
+                    .collect(),
+                DType::Float16
+                | DType::Float32
+                | DType::Int32
+                | DType::Uint32
+                | DType::Int8
+                | DType::Int4 => table
+                    .iter()
+                    .map(|&v| half::f16::from_f32(v).to_bits())
+                    .collect(),
             }
         };
 
         let cos_16 = to_16bit(&cos_f32);
         let sin_16 = to_16bit(&sin_f32);
 
-        let cos_bytes = unsafe { std::slice::from_raw_parts(cos_16.as_ptr() as *const u8, cos_16.len() * 2) };
-        let sin_bytes = unsafe { std::slice::from_raw_parts(sin_16.as_ptr() as *const u8, sin_16.len() * 2) };
+        let cos_bytes =
+            unsafe { core::slice::from_raw_parts(cos_16.as_ptr() as *const u8, cos_16.len() * 2) };
+        let sin_bytes =
+            unsafe { core::slice::from_raw_parts(sin_16.as_ptr() as *const u8, sin_16.len() * 2) };
 
         let mut cos_buf = DeviceBuffer::alloc(cos_bytes.len()).expect("precompute_rope: alloc cos");
-        cos_buf.copy_from_host(cos_bytes).expect("precompute_rope: upload cos");
+        cos_buf
+            .copy_from_host(cos_bytes)
+            .expect("precompute_rope: upload cos");
         let mut sin_buf = DeviceBuffer::alloc(sin_bytes.len()).expect("precompute_rope: alloc sin");
-        sin_buf.copy_from_host(sin_bytes).expect("precompute_rope: upload sin");
+        sin_buf
+            .copy_from_host(sin_bytes)
+            .expect("precompute_rope: upload sin");
 
         tracing::info!(
             "Precomputed RoPE tables: max_seq_len={}, head_dim={}, dtype={:?}, \
              cos={:.2}MB, sin={:.2}MB",
-            max_seq_len, head_dim, dtype,
+            max_seq_len,
+            head_dim,
+            dtype,
             cos_bytes.len() as f64 / 1e6,
             sin_bytes.len() as f64 / 1e6,
         );
@@ -481,113 +521,146 @@ impl AscendComputeOps {
         // ── Determine cos/sin source ──
         // If precomputed tables exist, use device-side pointer offsets.
         // Otherwise fall back to CPU computation + H2D upload (legacy path).
-        let (cos_buf, sin_buf, cos_owned, sin_owned) = if let (Some(precomp_cos), Some(precomp_sin)) =
-            (self.rope_cos.get(), self.rope_sin.get())
-        {
-            // Each row is head_dim elements × 2 bytes (f16/bf16)
-            let row_bytes = head_dim * 2;
+        let (cos_buf, sin_buf, cos_owned, _sin_owned) =
+            if let (Some(precomp_cos), Some(precomp_sin)) =
+                (self.rope_cos.get(), self.rope_sin.get())
+            {
+                // Each row is head_dim elements × 2 bytes (f16/bf16)
+                let row_bytes = head_dim * 2;
 
-            // Check if positions are contiguous (most common case: prefill or single-token decode)
-            let is_contiguous = positions.len() <= 1
-                || positions.windows(2).all(|w| w[1] == w[0] + 1);
+                // Check if positions are contiguous (most common case: prefill or single-token decode)
+                let is_contiguous =
+                    positions.len() <= 1 || positions.windows(2).all(|w| w[1] == w[0] + 1);
 
-            if is_contiguous && !positions.is_empty() {
-                // Zero-copy: just offset into the precomputed device buffer
-                let start_pos = positions[0] as usize;
-                let offset = start_pos * row_bytes;
-                let slice_bytes = seq_len * row_bytes;
+                if is_contiguous && !positions.is_empty() {
+                    // Zero-copy: just offset into the precomputed device buffer
+                    let start_pos = positions[0] as usize;
+                    let offset = start_pos * row_bytes;
+                    let slice_bytes = seq_len * row_bytes;
 
-                let cos_view = unsafe {
-                    DeviceBuffer::from_raw_non_owning(
-                        (precomp_cos.ptr() as *mut u8).add(offset) as *mut std::os::raw::c_void,
-                        slice_bytes,
-                    )
-                };
-                let sin_view = unsafe {
-                    DeviceBuffer::from_raw_non_owning(
-                        (precomp_sin.ptr() as *mut u8).add(offset) as *mut std::os::raw::c_void,
-                        slice_bytes,
-                    )
-                };
-                (cos_view, sin_view, false, false)
+                    let cos_view = unsafe {
+                        DeviceBuffer::from_raw_non_owning(
+                            (precomp_cos.ptr() as *mut u8).add(offset) as *mut std::os::raw::c_void,
+                            slice_bytes,
+                        )
+                    };
+                    let sin_view = unsafe {
+                        DeviceBuffer::from_raw_non_owning(
+                            (precomp_sin.ptr() as *mut u8).add(offset) as *mut std::os::raw::c_void,
+                            slice_bytes,
+                        )
+                    };
+                    (cos_view, sin_view, false, false)
+                } else {
+                    // Gather: copy individual rows via D2D into a temp buffer
+                    let total_bytes = seq_len * row_bytes;
+                    let cos_tmp = if let Some(ref mut a) = arena {
+                        a.alloc(total_bytes)
+                    } else {
+                        DeviceBuffer::alloc(total_bytes).expect("rope: alloc cos gather")
+                    };
+                    let sin_tmp = if let Some(ref mut a) = arena {
+                        a.alloc(total_bytes)
+                    } else {
+                        DeviceBuffer::alloc(total_bytes).expect("rope: alloc sin gather")
+                    };
+
+                    for (s, &pos) in positions.iter().enumerate() {
+                        let src_offset = (pos as usize) * row_bytes;
+                        let dst_offset = s * row_bytes;
+                        unsafe {
+                            let cos_src = (precomp_cos.ptr() as *const u8).add(src_offset)
+                                as *const std::os::raw::c_void;
+                            let cos_dst = (cos_tmp.ptr() as *mut u8).add(dst_offset)
+                                as *mut std::os::raw::c_void;
+                            ascendcl_sys::aclrtMemcpy(
+                                cos_dst,
+                                row_bytes,
+                                cos_src,
+                                row_bytes,
+                                ascendcl_sys::AclrtMemcpyKind::DeviceToDevice,
+                            );
+                            let sin_src = (precomp_sin.ptr() as *const u8).add(src_offset)
+                                as *const std::os::raw::c_void;
+                            let sin_dst = (sin_tmp.ptr() as *mut u8).add(dst_offset)
+                                as *mut std::os::raw::c_void;
+                            ascendcl_sys::aclrtMemcpy(
+                                sin_dst,
+                                row_bytes,
+                                sin_src,
+                                row_bytes,
+                                ascendcl_sys::AclrtMemcpyKind::DeviceToDevice,
+                            );
+                        }
+                    }
+                    let cos_owned = cos_tmp.is_owned();
+                    let sin_owned = sin_tmp.is_owned();
+                    (cos_tmp, sin_tmp, cos_owned, sin_owned)
+                }
             } else {
-                // Gather: copy individual rows via D2D into a temp buffer
-                let total_bytes = seq_len * row_bytes;
-                let mut cos_tmp = if let Some(ref mut a) = arena {
-                    a.alloc(total_bytes)
-                } else {
-                    DeviceBuffer::alloc(total_bytes).expect("rope: alloc cos gather")
-                };
-                let mut sin_tmp = if let Some(ref mut a) = arena {
-                    a.alloc(total_bytes)
-                } else {
-                    DeviceBuffer::alloc(total_bytes).expect("rope: alloc sin gather")
-                };
+                // ── Legacy fallback: CPU compute + H2D upload ──
+                let half_dim = head_dim / 2;
+                let table_size = seq_len * head_dim;
+                let mut cos_table = vec![0.0f32; table_size];
+                let mut sin_table = vec![0.0f32; table_size];
 
                 for (s, &pos) in positions.iter().enumerate() {
-                    let src_offset = (pos as usize) * row_bytes;
-                    let dst_offset = s * row_bytes;
-                    unsafe {
-                        let cos_src = (precomp_cos.ptr() as *const u8).add(src_offset) as *const std::os::raw::c_void;
-                        let cos_dst = (cos_tmp.ptr() as *mut u8).add(dst_offset) as *mut std::os::raw::c_void;
-                        ascendcl_sys::aclrtMemcpy(
-                            cos_dst, row_bytes,
-                            cos_src, row_bytes,
-                            ascendcl_sys::AclrtMemcpyKind::DeviceToDevice,
-                        );
-                        let sin_src = (precomp_sin.ptr() as *const u8).add(src_offset) as *const std::os::raw::c_void;
-                        let sin_dst = (sin_tmp.ptr() as *mut u8).add(dst_offset) as *mut std::os::raw::c_void;
-                        ascendcl_sys::aclrtMemcpy(
-                            sin_dst, row_bytes,
-                            sin_src, row_bytes,
-                            ascendcl_sys::AclrtMemcpyKind::DeviceToDevice,
-                        );
+                    for i in 0..half_dim {
+                        let freq =
+                            f64::from(pos) / rope_theta.powf(2.0 * i as f64 / head_dim as f64);
+                        let cos_val = freq.cos() as f32;
+                        let sin_val = freq.sin() as f32;
+                        cos_table[s * head_dim + i] = cos_val;
+                        cos_table[s * head_dim + half_dim + i] = cos_val;
+                        sin_table[s * head_dim + i] = sin_val;
+                        sin_table[s * head_dim + half_dim + i] = sin_val;
                     }
                 }
-                let cos_owned = cos_tmp.is_owned();
-                let sin_owned = sin_tmp.is_owned();
-                (cos_tmp, sin_tmp, cos_owned, sin_owned)
-            }
-        } else {
-            // ── Legacy fallback: CPU compute + H2D upload ──
-            let half_dim = head_dim / 2;
-            let table_size = seq_len * head_dim;
-            let mut cos_table = vec![0.0f32; table_size];
-            let mut sin_table = vec![0.0f32; table_size];
 
-            for (s, &pos) in positions.iter().enumerate() {
-                for i in 0..half_dim {
-                    let freq = (pos as f64) / rope_theta.powf(2.0 * i as f64 / head_dim as f64);
-                    let cos_val = freq.cos() as f32;
-                    let sin_val = freq.sin() as f32;
-                    cos_table[s * head_dim + i] = cos_val;
-                    cos_table[s * head_dim + half_dim + i] = cos_val;
-                    sin_table[s * head_dim + i] = sin_val;
-                    sin_table[s * head_dim + half_dim + i] = sin_val;
-                }
-            }
+                let build_16bit_table = |table: &[f32]| -> Vec<u16> {
+                    match q.dtype() {
+                        DType::BFloat16 => table
+                            .iter()
+                            .map(|&v| half::bf16::from_f32(v).to_bits())
+                            .collect(),
+                        DType::Float16
+                        | DType::Float32
+                        | DType::Int32
+                        | DType::Uint32
+                        | DType::Int8
+                        | DType::Int4 => table
+                            .iter()
+                            .map(|&v| half::f16::from_f32(v).to_bits())
+                            .collect(),
+                    }
+                };
 
-            let build_16bit_table = |table: &[f32]| -> Vec<u16> {
-                match q.dtype() {
-                    DType::BFloat16 => table.iter().map(|&v| half::bf16::from_f32(v).to_bits()).collect(),
-                    _ => table.iter().map(|&v| half::f16::from_f32(v).to_bits()).collect(),
-                }
+                let cos_16 = build_16bit_table(&cos_table);
+                let sin_16 = build_16bit_table(&sin_table);
+
+                let cos_bytes = unsafe {
+                    core::slice::from_raw_parts(cos_16.as_ptr() as *const u8, cos_16.len() * 2)
+                };
+                let sin_bytes = unsafe {
+                    core::slice::from_raw_parts(sin_16.as_ptr() as *const u8, sin_16.len() * 2)
+                };
+
+                let mut cos_buf = if let Some(ref mut a) = arena {
+                    a.alloc(cos_bytes.len())
+                } else {
+                    DeviceBuffer::alloc(cos_bytes.len()).expect("rope: alloc cos")
+                };
+                cos_buf.copy_from_host(cos_bytes).expect("rope: upload cos");
+                let mut sin_buf = if let Some(ref mut a) = arena {
+                    a.alloc(sin_bytes.len())
+                } else {
+                    DeviceBuffer::alloc(sin_bytes.len()).expect("rope: alloc sin")
+                };
+                sin_buf.copy_from_host(sin_bytes).expect("rope: upload sin");
+                let cos_owned = cos_buf.is_owned();
+                let sin_owned = sin_buf.is_owned();
+                (cos_buf, sin_buf, cos_owned, sin_owned)
             };
-
-            let cos_16 = build_16bit_table(&cos_table);
-            let sin_16 = build_16bit_table(&sin_table);
-
-            let cos_bytes = unsafe { std::slice::from_raw_parts(cos_16.as_ptr() as *const u8, cos_16.len() * 2) };
-            let sin_bytes = unsafe { std::slice::from_raw_parts(sin_16.as_ptr() as *const u8, sin_16.len() * 2) };
-
-            let mut cos_buf = if let Some(ref mut a) = arena { a.alloc(cos_bytes.len()) } else { DeviceBuffer::alloc(cos_bytes.len()).expect("rope: alloc cos") };
-            cos_buf.copy_from_host(cos_bytes).expect("rope: upload cos");
-            let mut sin_buf = if let Some(ref mut a) = arena { a.alloc(sin_bytes.len()) } else { DeviceBuffer::alloc(sin_bytes.len()).expect("rope: alloc sin") };
-            sin_buf.copy_from_host(sin_bytes).expect("rope: upload sin");
-            let cos_owned = cos_buf.is_owned();
-            let sin_owned = sin_buf.is_owned();
-            (cos_buf, sin_buf, cos_owned, sin_owned)
-        };
 
         let cs_shape = [1i64, seq_len as i64, 1i64, head_dim as i64];
         let acl_cos = AclTensor::from_ptr(&cs_shape, to_acl_dtype(q.dtype()), cos_buf.ptr())
@@ -697,7 +770,6 @@ impl AscendComputeOps {
         // Sync stream to ensure all prior ops finished
         self.synchronize().ok();
 
-
         // Causal mask
         let mask_shape = [1i64, 1, seq_len as i64, seq_len as i64];
         let mask_numel = seq_len * seq_len;
@@ -707,7 +779,11 @@ impl AscendComputeOps {
                 host_mask[row * seq_len + col] = 1;
             }
         }
-        let mut mask_buf = if let Some(ref mut a) = arena { a.alloc(mask_numel) } else { DeviceBuffer::alloc(mask_numel).expect("attention: alloc mask") };
+        let mut mask_buf = if let Some(ref mut a) = arena {
+            a.alloc(mask_numel)
+        } else {
+            DeviceBuffer::alloc(mask_numel).expect("attention: alloc mask")
+        };
         mask_buf
             .copy_from_host(&host_mask)
             .expect("attention: upload mask");
@@ -720,9 +796,13 @@ impl AscendComputeOps {
 
         // Auxiliary softmax buffers
         let aux_shape = [batch as i64, num_heads as i64, seq_len as i64, 8i64];
-        let aux_bytes = batch * num_heads * seq_len * 8 * std::mem::size_of::<f32>();
+        let aux_bytes = batch * num_heads * seq_len * 8 * core::mem::size_of::<f32>();
 
-        let sm_max_buf = if let Some(ref mut a) = arena { a.alloc(aux_bytes) } else { DeviceBuffer::alloc(aux_bytes).expect("attention: alloc sm_max") };
+        let sm_max_buf = if let Some(ref mut a) = arena {
+            a.alloc(aux_bytes)
+        } else {
+            DeviceBuffer::alloc(aux_bytes).expect("attention: alloc sm_max")
+        };
         let acl_sm_max = AclTensor::new(
             &aux_shape,
             aclnn_sys::common::AclDataType::Float,
@@ -730,7 +810,11 @@ impl AscendComputeOps {
         )
         .expect("attention: sm_max tensor");
 
-        let sm_sum_buf = if let Some(ref mut a) = arena { a.alloc(aux_bytes) } else { DeviceBuffer::alloc(aux_bytes).expect("attention: alloc sm_sum") };
+        let sm_sum_buf = if let Some(ref mut a) = arena {
+            a.alloc(aux_bytes)
+        } else {
+            DeviceBuffer::alloc(aux_bytes).expect("attention: alloc sm_sum")
+        };
         let acl_sm_sum = AclTensor::new(
             &aux_shape,
             aclnn_sys::common::AclDataType::Float,
@@ -773,11 +857,20 @@ impl AscendComputeOps {
         out
     }
 
-    pub fn silu_mul(&self, gate: &DeviceTensor, up: &DeviceTensor, mut arena: Option<&mut crate::model::scratch_arena::ScratchArena>) -> DeviceTensor {
+    pub fn silu_mul(
+        &self,
+        gate: &DeviceTensor,
+        up: &DeviceTensor,
+        mut arena: Option<&mut crate::model::scratch_arena::ScratchArena>,
+    ) -> DeviceTensor {
         self.ensure_device_context();
 
         let acl_gate = Self::wrap_device(gate);
-        let silu_buf = if let Some(ref mut a) = arena { a.alloc(gate.size_bytes()) } else { DeviceBuffer::alloc(gate.size_bytes()).expect("silu_mul: alloc silu") };
+        let silu_buf = if let Some(ref mut a) = arena {
+            a.alloc(gate.size_bytes())
+        } else {
+            DeviceBuffer::alloc(gate.size_bytes()).expect("silu_mul: alloc silu")
+        };
         let mut acl_silu = AclTensor::new(
             &shape_i64(gate.shape()),
             to_acl_dtype(gate.dtype()),
@@ -803,13 +896,23 @@ impl AscendComputeOps {
         out
     }
 
-    pub fn embedding(&self, ids: &[u32], table: &WeightTensor, mut arena: Option<&mut crate::model::scratch_arena::ScratchArena>) -> DeviceTensor {
+    pub fn embedding(
+        &self,
+        ids: &[u32],
+        table: &WeightTensor,
+        mut arena: Option<&mut crate::model::scratch_arena::ScratchArena>,
+    ) -> DeviceTensor {
         self.ensure_device_context();
 
-        let ids_i64: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
-        let ids_bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(ids_i64.as_ptr() as *const u8, ids_i64.len() * 8) };
-        let mut ids_buf = if let Some(ref mut a) = arena { a.alloc(ids_bytes.len()) } else { DeviceBuffer::alloc(ids_bytes.len()).expect("embedding: alloc ids") };
+        let ids_i64: Vec<i64> = ids.iter().map(|&id| i64::from(id)).collect();
+        let ids_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(ids_i64.as_ptr() as *const u8, ids_i64.len() * 8)
+        };
+        let mut ids_buf = if let Some(ref mut a) = arena {
+            a.alloc(ids_bytes.len())
+        } else {
+            DeviceBuffer::alloc(ids_bytes.len()).expect("embedding: alloc ids")
+        };
         ids_buf
             .copy_from_host(ids_bytes)
             .expect("embedding: upload ids");
@@ -855,7 +958,7 @@ impl AscendComputeOps {
 
     pub fn sample_argmax(&self, logits: &DeviceTensor) -> u32 {
         self.ensure_device_context();
-        let perf_breakdown = std::env::var("RUST_LLM_PERF_BREAKDOWN").map_or(false, |v| v == "1");
+        let perf_breakdown = std::env::var("RUST_LLM_PERF_BREAKDOWN").is_ok_and(|v| v == "1");
         let total_start = if perf_breakdown {
             Some(Instant::now())
         } else {
@@ -870,7 +973,7 @@ impl AscendComputeOps {
             .map(|&d| d as i64)
             .collect();
         let out_numel: usize = out_shape.iter().map(|&d| d as usize).product();
-        let out_bytes = out_numel * std::mem::size_of::<i64>();
+        let out_bytes = out_numel * core::mem::size_of::<i64>();
 
         let alloc_start = if perf_breakdown {
             Some(Instant::now())
@@ -923,7 +1026,7 @@ impl AscendComputeOps {
         };
         out_buf
             .copy_to_host(unsafe {
-                std::slice::from_raw_parts_mut(results.as_mut_ptr() as *mut u8, out_bytes)
+                core::slice::from_raw_parts_mut(results.as_mut_ptr() as *mut u8, out_bytes)
             })
             .expect("sample_argmax: copy to host");
         let copy_ms = copy_start
@@ -975,9 +1078,8 @@ impl AscendComputeOps {
             let dst_offset = slot as usize * token_size;
 
             // K: source → cache slot
-            let k_src = unsafe { (k.ptr() as usize + src_offset) as *const std::os::raw::c_void };
-            let k_dst =
-                unsafe { (key_cache.ptr() as usize + dst_offset) as *mut std::os::raw::c_void };
+            let k_src = (k.ptr() as usize + src_offset) as *const std::os::raw::c_void;
+            let k_dst = (key_cache.ptr() as usize + dst_offset) as *mut std::os::raw::c_void;
             let status = unsafe {
                 ascendcl_sys::aclrtMemcpyAsync(
                     k_dst,
@@ -995,9 +1097,8 @@ impl AscendComputeOps {
             );
 
             // V: source → cache slot
-            let v_src = unsafe { (v.ptr() as usize + src_offset) as *const std::os::raw::c_void };
-            let v_dst =
-                unsafe { (value_cache.ptr() as usize + dst_offset) as *mut std::os::raw::c_void };
+            let v_src = (v.ptr() as usize + src_offset) as *const std::os::raw::c_void;
+            let v_dst = (value_cache.ptr() as usize + dst_offset) as *mut std::os::raw::c_void;
             let status = unsafe {
                 ascendcl_sys::aclrtMemcpyAsync(
                     v_dst,
@@ -1049,7 +1150,7 @@ impl AscendComputeOps {
         // All layers share the same block_table within a single decode step.
         if decode_bufs.block_table_dirty {
             let bt_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
+                core::slice::from_raw_parts(
                     block_table_host.as_ptr() as *const u8,
                     block_table_host.len() * 4,
                 )
@@ -1111,5 +1212,4 @@ impl AscendComputeOps {
 
         out
     }
-
 }

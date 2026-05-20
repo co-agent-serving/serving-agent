@@ -275,6 +275,7 @@ impl fmt::Display for WeightTensor {
 /// freed when the pool is dropped (after `sample_argmax` calls
 /// `stream.synchronize()`).
 #[cfg(feature = "ascend")]
+#[derive(Debug)]
 pub struct TensorPool {
     slots: Vec<Option<DeviceTensor>>,
     /// Buffers whose device memory must stay alive until the stream
@@ -302,12 +303,12 @@ impl TensorPool {
     /// Exception: if the old buffer is **non-owning** (arena-backed), it is
     /// simply dropped without being deferred — the arena manages its lifetime.
     pub fn put(&mut self, idx: usize, tensor: DeviceTensor) {
-        if let Some(old) = self.slots[idx].take() {
-            if old.is_owned() {
-                self._deferred.push(old.into_buf());
-            }
-            // Non-owning (arena) buffers: drop silently — no aclrtFree.
+        if let Some(old) = self.slots[idx].take()
+            && old.is_owned()
+        {
+            self._deferred.push(old.into_buf());
         }
+        // Non-owning (arena) buffers: drop silently — no aclrtFree.
         self.slots[idx] = Some(tensor);
     }
     /// Borrow a tensor for reading (e.g., as input to an operator).

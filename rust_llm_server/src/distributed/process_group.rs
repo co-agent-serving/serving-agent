@@ -5,13 +5,16 @@
 //! via a temporary file.
 
 use super::DistributedConfig;
-use ascend::comm::{get_root_info, read_root_info_from_file, write_root_info_to_file, HcclCommunicator};
+use ascend::comm::{
+    HcclCommunicator, get_root_info, read_root_info_from_file, write_root_info_to_file,
+};
+use core::time::Duration;
 use hccl_sys::HcclRootInfo;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::thread;
-use std::time::Duration;
 
 /// Holds the HCCL communicators for each parallelism dimension.
+#[derive(Debug)]
 pub struct ProcessGroups {
     /// Communicator for TP group (AllReduce, AllGather). None if tp_size == 1.
     pub tp_comm: Option<HcclCommunicator>,
@@ -34,7 +37,7 @@ pub struct ProcessGroups {
 pub fn init_process_groups(
     dist: &DistributedConfig,
     root_info_dir: &Path,
-) -> Result<ProcessGroups, Box<dyn std::error::Error>> {
+) -> Result<ProcessGroups, Box<dyn core::error::Error>> {
     std::fs::create_dir_all(root_info_dir)?;
 
     // Initialize TP communicator
@@ -50,10 +53,7 @@ pub fn init_process_groups(
             dist.tp_group_rank()
         );
 
-        let root_info = share_root_info(
-            &root_info_path,
-            dist.tp_group_rank() == 0,
-        )?;
+        let root_info = share_root_info(&root_info_path, dist.tp_group_rank() == 0)?;
 
         let comm = HcclCommunicator::init_rank(
             dist.tp_size as u32,
@@ -79,10 +79,7 @@ pub fn init_process_groups(
             dist.pp_group_rank()
         );
 
-        let root_info = share_root_info(
-            &root_info_path,
-            dist.pp_group_rank() == 0,
-        )?;
+        let root_info = share_root_info(&root_info_path, dist.pp_group_rank() == 0)?;
 
         let comm = HcclCommunicator::init_rank(
             dist.pp_size as u32,
@@ -105,7 +102,7 @@ pub fn init_process_groups(
 fn share_root_info(
     path: &Path,
     is_root: bool,
-) -> Result<HcclRootInfo, Box<dyn std::error::Error>> {
+) -> Result<HcclRootInfo, Box<dyn core::error::Error>> {
     if is_root {
         // Remove stale file from previous runs
         let _ = std::fs::remove_file(path);

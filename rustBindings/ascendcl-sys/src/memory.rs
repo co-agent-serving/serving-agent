@@ -5,7 +5,7 @@
 use super::types::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     // ─── Device Memory ──────────────────────────────────────────────
 
     /// Allocate device memory.
@@ -59,7 +59,7 @@ extern "C" {
 
     /// Synchronous memset on device memory.
     pub fn aclrtMemset(dev_ptr: *mut c_void, max_count: usize, value: u8, count: usize)
-        -> AclError;
+    -> AclError;
 
     /// Asynchronous memset on a stream.
     pub fn aclrtMemsetAsync(

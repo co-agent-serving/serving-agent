@@ -1,11 +1,10 @@
 //! Safe matmul wrapper.
 
-use crate::error::{check_aclnn, Result};
+use crate::error::{Result, check_aclnn};
 use crate::memory::DeviceBuffer;
 use crate::stream::Stream;
 use crate::tensor::AclTensor;
 use aclnn_sys::common::AclOpExecutor;
-use std::os::raw::c_void;
 
 /// Matrix multiplication: out = a @ b.
 ///
@@ -19,9 +18,11 @@ use std::os::raw::c_void;
 /// Call `stream.synchronize()` for the result.
 pub fn matmul(stream: &Stream, a: &AclTensor, b: &AclTensor, out: &mut AclTensor) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
     // Stage 1: Get workspace size
+    // Safety: All tensor handles (`a.raw()`, `b.raw()`, `out.raw()`) are
+    // non-null and valid. Output pointers are valid mutable references.
     check_aclnn(unsafe {
         aclnn_sys::matmul::aclnnMatmulGetWorkspaceSize(
             a.raw(),
@@ -43,9 +44,11 @@ pub fn matmul(stream: &Stream, a: &AclTensor, b: &AclTensor, out: &mut AclTensor
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
     // Stage 2: Execute
+    // Safety: `executor` was initialized by GetWorkspaceSize; `ws_ptr` is valid
+    // device memory (or null); `stream.raw()` is a valid stream handle.
     check_aclnn(unsafe {
         aclnn_sys::matmul::aclnnMatmul(ws_ptr, workspace_size, executor, stream.raw())
     })?;
@@ -106,4 +109,3 @@ pub fn matmul_fp32(
     // DeviceBuffers freed on drop (RAII)
     Ok(())
 }
-

@@ -8,6 +8,15 @@
 //! Or use the helper script (launches both):
 //!   bash examples/run_hccl_smoke_test.sh
 
+// Silence unused_crate_dependencies lint: this example inherits all deps of
+// rust_llm_server but only uses ascend, ascendcl-sys, and hccl-sys.
+#[cfg_attr(not(feature = "hccl"), allow(unused_imports))]
+use {
+    aclnn_sys as _, axum as _, clap as _, futures_core as _, half as _, kv_cache as _,
+    memmap2 as _, rust_llm_server as _, safetensors as _, serde as _, serde_json as _,
+    tokenizers as _, tokio as _, tokio_stream as _, tracing as _, tracing_subscriber as _,
+};
+
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -15,11 +24,13 @@ use std::time::Duration;
 fn main() {
     // Parse args
     let args: Vec<String> = std::env::args().collect();
-    let rank: u32 = args.iter()
+    let rank: u32 = args
+        .iter()
         .position(|a| a == "--rank")
         .map(|i| args[i + 1].parse().unwrap())
         .expect("Usage: --rank <0|1> --nranks <N>");
-    let nranks: u32 = args.iter()
+    let nranks: u32 = args
+        .iter()
         .position(|a| a == "--nranks")
         .map(|i| args[i + 1].parse().unwrap())
         .unwrap_or(2);
@@ -33,8 +44,7 @@ fn main() {
 
     // ─── Step 1: Init device ───────────────────────────────────────
     println!("[rank {rank}] Initializing device {device_id}...");
-    let _device = ascend::Device::init(device_id)
-        .expect("Device::init failed");
+    let _device = ascend::Device::init(device_id).expect("Device::init failed");
     println!("[rank {rank}] Device {device_id} initialized OK");
 
     let stream = ascend::Stream::new().expect("Stream::new failed");
@@ -47,11 +57,13 @@ fn main() {
         // Remove stale file
         let _ = std::fs::remove_file(root_info_path);
 
-        let info = ascend::comm::get_root_info()
-            .expect("get_root_info failed");
+        let info = ascend::comm::get_root_info().expect("get_root_info failed");
         ascend::comm::write_root_info_to_file(&info, root_info_path)
             .expect("write_root_info_to_file failed");
-        println!("[rank {rank}] Root info written to {}", root_info_path.display());
+        println!(
+            "[rank {rank}] Root info written to {}",
+            root_info_path.display()
+        );
         info
     } else {
         // Wait for rank 0 to write the file
@@ -87,16 +99,14 @@ fn main() {
     {
         // Allocate 1024 bytes (256 elements) to avoid small-buffer issues
         let count = 256;
-        let mut data = vec![rank as f32 + 1.0; count];
-        let data_bytes = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4)
-        };
-        let mut send_buf = ascend::DeviceBuffer::alloc(count * 4)
-            .expect("alloc send_buf failed");
-        let recv_buf = ascend::DeviceBuffer::alloc(count * 4)
-            .expect("alloc recv_buf failed");
+        let data = vec![rank as f32 + 1.0; count];
+        let data_bytes =
+            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4) };
+        let mut send_buf = ascend::DeviceBuffer::alloc(count * 4).expect("alloc send_buf failed");
+        let recv_buf = ascend::DeviceBuffer::alloc(count * 4).expect("alloc recv_buf failed");
 
-        send_buf.copy_from_host(data_bytes)
+        send_buf
+            .copy_from_host(data_bytes)
             .expect("H2D copy for AllReduce failed");
 
         println!("[rank {rank}] AllReduce: input[0] = {}", data[0]);
@@ -122,10 +132,19 @@ fn main() {
                 let result_bytes = unsafe {
                     std::slice::from_raw_parts_mut(result_data.as_mut_ptr() as *mut u8, count * 4)
                 };
-                recv_buf.copy_to_host(result_bytes).expect("D2H copy failed");
-                println!("[rank {rank}] ✅ AllReduce result[0] = {} (expected {})", result_data[0], (nranks * (nranks + 1) / 2) as f32);
+                recv_buf
+                    .copy_to_host(result_bytes)
+                    .expect("D2H copy failed");
+                println!(
+                    "[rank {rank}] ✅ AllReduce result[0] = {} (expected {})",
+                    result_data[0],
+                    (nranks * (nranks + 1) / 2) as f32
+                );
             } else {
-                println!("[rank {rank}] ❌ stream.synchronize after AllReduce FAILED: Acl({})", sync_err);
+                println!(
+                    "[rank {rank}] ❌ stream.synchronize after AllReduce FAILED: Acl({})",
+                    sync_err
+                );
             }
         }
     }
@@ -134,23 +153,20 @@ fn main() {
     println!("[rank {rank}] Testing Broadcast...");
     {
         let count = 256;
-        let mut buf = ascend::DeviceBuffer::alloc(count * 4)
-            .expect("alloc for Broadcast failed");
+        let mut buf = ascend::DeviceBuffer::alloc(count * 4).expect("alloc for Broadcast failed");
 
         if rank == 0 {
             let data = vec![42.0f32; count];
-            let data_bytes = unsafe {
-                std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4)
-            };
+            let data_bytes =
+                unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4) };
             buf.copy_from_host(data_bytes)
                 .expect("H2D copy for Broadcast failed");
             println!("[rank {rank}] Broadcast: sending 42.0 from root");
         } else {
             // init with zeros
             let data = vec![0.0f32; count];
-            let data_bytes = unsafe {
-                std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4)
-            };
+            let data_bytes =
+                unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4) };
             buf.copy_from_host(data_bytes).expect("H2D zeroing failed");
             println!("[rank {rank}] Broadcast: waiting to receive from root");
         }
@@ -176,9 +192,15 @@ fn main() {
                     std::slice::from_raw_parts_mut(result_data.as_mut_ptr() as *mut u8, count * 4)
                 };
                 buf.copy_to_host(result_bytes).expect("D2H copy failed");
-                println!("[rank {rank}] ✅ Broadcast result[0] = {} (expected 42.0)", result_data[0]);
+                println!(
+                    "[rank {rank}] ✅ Broadcast result[0] = {} (expected 42.0)",
+                    result_data[0]
+                );
             } else {
-                println!("[rank {rank}] ❌ stream.synchronize after Broadcast FAILED: Acl({})", sync_err);
+                println!(
+                    "[rank {rank}] ❌ stream.synchronize after Broadcast FAILED: Acl({})",
+                    sync_err
+                );
             }
         }
     }
@@ -187,23 +209,21 @@ fn main() {
     println!("[rank {rank}] Testing Broadcast with u32...");
     {
         let count = 256;
-        let mut buf = ascend::DeviceBuffer::alloc(count * 4)
-            .expect("alloc for u32 Broadcast failed");
+        let mut buf =
+            ascend::DeviceBuffer::alloc(count * 4).expect("alloc for u32 Broadcast failed");
 
         if rank == 0 {
-            let data = vec![24u32; count]; 
-            let data_bytes = unsafe {
-                std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4)
-            };
+            let data = vec![24u32; count];
+            let data_bytes =
+                unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4) };
             buf.copy_from_host(data_bytes)
                 .expect("H2D copy for u32 Broadcast failed");
             println!("[rank {rank}] u32 Broadcast: sending 24 from root");
         } else {
             // init with zeros
             let data = vec![0u32; count];
-            let data_bytes = unsafe {
-                std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4)
-            };
+            let data_bytes =
+                unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, count * 4) };
             buf.copy_from_host(data_bytes).expect("H2D zeroing failed");
             println!("[rank {rank}] u32 Broadcast: waiting to receive from root");
         }
@@ -229,9 +249,15 @@ fn main() {
                     std::slice::from_raw_parts_mut(result_data.as_mut_ptr() as *mut u8, count * 4)
                 };
                 buf.copy_to_host(result_bytes).expect("D2H copy failed");
-                println!("[rank {rank}] ✅ u32 Broadcast result[0] = {} (expected 24)", result_data[0]);
+                println!(
+                    "[rank {rank}] ✅ u32 Broadcast result[0] = {} (expected 24)",
+                    result_data[0]
+                );
             } else {
-                println!("[rank {rank}] ❌ stream.synchronize after u32 Broadcast FAILED: Acl({})", sync_err);
+                println!(
+                    "[rank {rank}] ❌ stream.synchronize after u32 Broadcast FAILED: Acl({})",
+                    sync_err
+                );
             }
         }
     }

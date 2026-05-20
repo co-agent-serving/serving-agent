@@ -1,13 +1,12 @@
 //! Safe Embedding wrapper.
 
-use crate::error::{check_aclnn, Result};
+use crate::error::{Result, check_aclnn};
 use crate::memory::DeviceBuffer;
 use crate::stream::Stream;
 use crate::tensor::AclTensor;
 use aclnn_sys::common::AclOpExecutor;
-use std::os::raw::c_void;
 
-/// Embedding lookup: out[i] = weight[indices[i]].
+/// Embedding lookup: out\[i\] = weight\[indices\[i\]\].
 ///
 /// # Arguments
 /// - `stream`: execution stream
@@ -21,9 +20,11 @@ pub fn embedding(
     out: &mut AclTensor,
 ) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
     // Stage 1: Get workspace size
+    // Safety: All tensor handles (`weight.raw()`, `indices.raw()`, `out.raw()`)
+    // are non-null and valid. Output pointers are valid mutable references.
     check_aclnn(unsafe {
         aclnn_sys::embedding::aclnnEmbeddingGetWorkspaceSize(
             weight.raw(),
@@ -44,9 +45,11 @@ pub fn embedding(
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
     // Stage 2: Execute
+    // Safety: `executor` was initialized by GetWorkspaceSize; `ws_ptr` is valid
+    // device memory (or null for zero-size); `stream.raw()` is a valid handle.
     check_aclnn(unsafe {
         aclnn_sys::embedding::aclnnEmbedding(ws_ptr, workspace_size, executor, stream.raw())
     })?;

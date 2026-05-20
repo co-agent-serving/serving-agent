@@ -54,12 +54,7 @@ impl DistributedConfig {
     /// ```text
     /// world_rank = dp_rank * (tp_size * pp_size) + pp_rank * tp_size + tp_rank
     /// ```
-    pub fn new(
-        tp_size: usize,
-        pp_size: usize,
-        dp_size: usize,
-        world_rank: usize,
-    ) -> Self {
+    pub fn new(tp_size: usize, pp_size: usize, dp_size: usize, world_rank: usize) -> Self {
         let world_size = tp_size * pp_size * dp_size;
         assert!(
             world_rank < world_size,
@@ -94,11 +89,7 @@ impl DistributedConfig {
     ///
     /// Reads `RANK`, `WORLD_SIZE`, `LOCAL_RANK` from the environment.
     /// `tp_size`, `pp_size`, `dp_size` come from CLI args.
-    pub fn from_env(
-        tp_size: usize,
-        pp_size: usize,
-        dp_size: usize,
-    ) -> Result<Self, String> {
+    pub fn from_env(tp_size: usize, pp_size: usize, dp_size: usize) -> Result<Self, String> {
         let world_rank: usize = std::env::var("RANK")
             .map_err(|_| "RANK env var not set")?
             .parse()

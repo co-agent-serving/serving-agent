@@ -488,11 +488,7 @@ mod tests {
         let model1 = Qwen3Model::new_sharded(config, &parallel1);
         assert_eq!(model1.num_layers(), 18);
         // Layer names should reflect original indices
-        assert!(model1.layers[0]
-            .self_attn
-            .q_proj
-            .name
-            .contains("layers.18"));
+        assert!(model1.layers[0].self_attn.q_proj.name.contains("layers.18"));
     }
 
     #[test]

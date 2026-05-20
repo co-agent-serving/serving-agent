@@ -6,7 +6,7 @@
 use super::common::*;
 use std::os::raw::c_void;
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: Flash Attention forward workspace (V1, prefill).
     ///
     /// - `query`: [B, N, S, D] or [B, S, N, D] depending on inputLayout

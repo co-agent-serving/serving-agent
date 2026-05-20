@@ -2,12 +2,11 @@
 //!
 //! Calls aclnnFlashAttentionScore V1 for prefill attention.
 
-use crate::error::{check_aclnn, Result};
+use crate::error::{Result, check_aclnn};
 use crate::memory::DeviceBuffer;
 use crate::stream::Stream;
 use crate::tensor::AclTensor;
 use aclnn_sys::common::AclOpExecutor;
-use std::os::raw::c_void;
 
 /// Flash Attention Score (prefill).
 ///
@@ -36,7 +35,7 @@ pub fn flash_attention_score(
     attention_out: &mut AclTensor,
 ) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
     // Null-terminate the layout string
     let layout_cstr = std::ffi::CString::new(input_layout).map_err(|_| {
@@ -44,16 +43,20 @@ pub fn flash_attention_score(
     })?;
 
     // Stage 1: Get workspace size
+    // Safety: All tensor handles (`query.raw()`, `key.raw()`, etc.) are
+    // non-null and valid. Null pointers for optional parameters are explicitly
+    // passed. `layout_cstr` is a valid CString. Output pointers
+    // `workspace_size` and `executor` are valid mutable references.
     check_aclnn(unsafe {
         aclnn_sys::attention::aclnnFlashAttentionScoreGetWorkspaceSize(
             query.raw(),
             key.raw(),
             value.raw(),
-            std::ptr::null(), // realShift: none
-            std::ptr::null(), // dropMask: none
-            std::ptr::null(), // paddingMask: none
-            std::ptr::null(), // attenMask: null = auto causal
-            std::ptr::null(), // prefix: none
+            core::ptr::null(), // realShift: none
+            core::ptr::null(), // dropMask: none
+            core::ptr::null(), // paddingMask: none
+            core::ptr::null(), // attenMask: null = auto causal
+            core::ptr::null(), // prefix: none
             scale,
             1.0,     // keepProb: no dropout
             seq_len, // preTokens: full causal window
@@ -64,7 +67,7 @@ pub fn flash_attention_score(
             0, // sparseMode: 0 = dense
             softmax_max.raw(),
             softmax_sum.raw(),
-            std::ptr::null(), // softmaxOut: not needed
+            core::ptr::null(), // softmaxOut: not needed
             attention_out.raw(),
             &mut workspace_size,
             &mut executor,
@@ -81,9 +84,12 @@ pub fn flash_attention_score(
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
     // Stage 2: Execute
+    // Safety: `executor` was initialized by the GetWorkspaceSize call above;
+    // `ws_ptr` points to valid device memory (or null for zero-size);
+    // `stream.raw()` is a valid stream handle.
     check_aclnn(unsafe {
         aclnn_sys::attention::aclnnFlashAttentionScore(
             ws_ptr,
@@ -116,23 +122,26 @@ pub fn flash_attention_score_with_mask(
     attention_out: &mut AclTensor,
 ) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
     let layout_cstr = std::ffi::CString::new(input_layout).map_err(|_| {
         crate::error::AscendError::InvalidArgument("invalid input_layout string".to_string())
     })?;
 
     // Stage 1: Get workspace size
+    // Safety: Same invariants as `flash_attention_score` — all tensor handles
+    // are valid, optional parameters are explicitly null, and `atten_mask.raw()`
+    // is non-null. Output pointers are valid mutable references.
     check_aclnn(unsafe {
         aclnn_sys::attention::aclnnFlashAttentionScoreGetWorkspaceSize(
             query.raw(),
             key.raw(),
             value.raw(),
-            std::ptr::null(), // realShift: none
-            std::ptr::null(), // dropMask: none
-            std::ptr::null(), // paddingMask: none
-            atten_mask.raw(), // explicit bool causal mask
-            std::ptr::null(), // prefix: none
+            core::ptr::null(), // realShift: none
+            core::ptr::null(), // dropMask: none
+            core::ptr::null(), // paddingMask: none
+            atten_mask.raw(),  // explicit bool causal mask
+            core::ptr::null(), // prefix: none
             scale,
             1.0,     // keepProb: no dropout
             seq_len, // preTokens: full causal window
@@ -143,7 +152,7 @@ pub fn flash_attention_score_with_mask(
             0, // sparseMode: 0 = dense (mask provided)
             softmax_max.raw(),
             softmax_sum.raw(),
-            std::ptr::null(), // softmaxOut: not needed
+            core::ptr::null(), // softmaxOut: not needed
             attention_out.raw(),
             &mut workspace_size,
             &mut executor,
@@ -160,9 +169,12 @@ pub fn flash_attention_score_with_mask(
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
     // Stage 2: Execute
+    // Safety: Same invariants as `flash_attention_score` — `executor` was
+    // initialized by GetWorkspaceSize; `ws_ptr` is valid device memory;
+    // `stream.raw()` is a valid stream handle.
     check_aclnn(unsafe {
         aclnn_sys::attention::aclnnFlashAttentionScore(
             ws_ptr,

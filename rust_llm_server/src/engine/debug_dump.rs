@@ -22,7 +22,7 @@ use std::path::PathBuf;
 const DEFAULT_MAX_LAYERS: usize = 2;
 
 /// Metadata for one dumped tensor file.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[allow(dead_code)]
 struct DumpEntry {
     file: String,
@@ -36,6 +36,7 @@ struct DumpEntry {
 /// Created once per `execute_paged()` call. If `TP_DEBUG_DUMP_DIR` is not
 /// set, `from_env()` returns `None` and all dump calls are no-ops.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct DebugDumper {
     dir: PathBuf,
     max_layers: usize,
@@ -78,17 +79,14 @@ impl DebugDumper {
     /// Synchronizes the stream, copies data from device to host, and writes
     /// the raw bytes to `{dir}/{name}.bin`. Also records metadata.
     #[cfg(feature = "ascend")]
-    pub fn dump(
-        &mut self,
-        name: &str,
-        tensor: &DeviceTensor,
-        stream: &ascend::Stream,
-    ) {
+    pub fn dump(&mut self, name: &str, tensor: &DeviceTensor, stream: &ascend::Stream) {
         let size = tensor.size_bytes();
         let mut host = vec![0u8; size];
 
         // Synchronize to ensure all prior compute ops have finished
-        stream.synchronize().expect("DebugDumper: stream sync failed");
+        stream
+            .synchronize()
+            .expect("DebugDumper: stream sync failed");
 
         // Copy from device to host
         tensor

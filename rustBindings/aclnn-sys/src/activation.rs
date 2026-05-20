@@ -7,7 +7,7 @@ use std::os::raw::c_void;
 
 // ─── SiLU (Sigmoid Linear Unit) ────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: SiLU workspace.
     /// Computes: out = x * sigmoid(x)
     pub fn aclnnSiluGetWorkspaceSize(
@@ -28,7 +28,7 @@ extern "C" {
 
 // ─── SiLU (in-place) ──────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: In-place SiLU workspace.
     pub fn aclnnInplaceSiluGetWorkspaceSize(
         self_: *const AclTensor,
@@ -47,7 +47,7 @@ extern "C" {
 
 // ─── SwiGLU ────────────────────────────────────────────────────────────
 
-extern "C" {
+unsafe extern "C" {
     /// Stage 1: SwiGLU workspace.
     /// Computes: out = silu(x1) * x2
     /// where x1 = gate_proj output, x2 = up_proj output

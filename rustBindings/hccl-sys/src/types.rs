@@ -33,9 +33,13 @@ impl Default for HcclRootInfo {
     }
 }
 
-impl std::fmt::Debug for HcclRootInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HcclRootInfo([{}; {}])", self.internal[0], HCCL_ROOT_INFO_BYTES)
+impl core::fmt::Debug for HcclRootInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "HcclRootInfo([{}; {}])",
+            self.internal[0], HCCL_ROOT_INFO_BYTES
+        )
     }
 }
 
@@ -46,57 +50,57 @@ impl std::fmt::Debug for HcclRootInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HcclResult {
     /// success
-    Success = 0,               
+    Success = 0,
     /// parameter error
-    ErrorPara = 1,                
+    ErrorPara = 1,
     /// empty pointer
-    ErrorPtr = 2,                 
+    ErrorPtr = 2,
     /// memory error
-    ErrorMemory = 3,              
+    ErrorMemory = 3,
     /// internal error
-    ErrorInternal = 4,            
+    ErrorInternal = 4,
     /// not support feature
-    ErrorNotSupport = 5,         
+    ErrorNotSupport = 5,
     /// not found specific resource
-    ErrorNotFound = 6,           
+    ErrorNotFound = 6,
     /// resource unavailable
-    ErrorUnavail = 7,             
+    ErrorUnavail = 7,
     /// call system interface error
-    ErrorSyscall = 8,             
+    ErrorSyscall = 8,
     /// timeout
-    ErrorTimeout = 9,             
+    ErrorTimeout = 9,
     /// open file fail
-    ErrorOpenFileFailure = 10,  
+    ErrorOpenFileFailure = 10,
     /// tcp connect fail
-    ErrorTcpConnect = 11,        
+    ErrorTcpConnect = 11,
     /// roce connect fail
-    ErrorRoceConnect = 12,       
+    ErrorRoceConnect = 12,
     /// tcp transfer fail
-    ErrorTcpTransfer = 13,       
+    ErrorTcpTransfer = 13,
     /// roce transfer fail
-    ErrorRoceTransfer = 14,      
+    ErrorRoceTransfer = 14,
     /// call runtime api fail
-    ErrorRuntime = 15,            
+    ErrorRuntime = 15,
     /// call driver api fail
-    ErrorDrv = 16,                
+    ErrorDrv = 16,
     /// call profiling api fail
-    ErrorProfiling = 17,          
+    ErrorProfiling = 17,
     /// call cce api fail
-    ErrorCce = 18,                
+    ErrorCce = 18,
     /// call network api fail
-    ErrorNetwork = 19,            
+    ErrorNetwork = 19,
     /// try again
-    ErrorAgain = 20,              
+    ErrorAgain = 20,
     /// error cqe
-    ErrorRemote = 21,             
+    ErrorRemote = 21,
     /// error communicator suspending
-    ErrorSuspending = 22,         
+    ErrorSuspending = 22,
     /// retry constraint
-    ErrorOpretryFail = 23,       
+    ErrorOpretryFail = 23,
     /// out of memory
-    ErrorOom = 24,                
+    ErrorOom = 24,
     /// The error information is in the status.
-    ErrorInStatus = 1041,        
+    ErrorInStatus = 1041,
     /// reserved
     ErrorReserved = 1042,
 }

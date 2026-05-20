@@ -1,5 +1,5 @@
-use std::time::Instant;
 use crate::engine::plan::ExecStep;
+use std::time::Instant;
 
 /// Statistics collected during execution of a forward pass or sampled tokens.
 #[derive(Default, Debug, Clone)]
@@ -21,6 +21,7 @@ pub struct PerfStats {
 }
 
 /// A timer to track execution time of various operations.
+#[derive(Debug)]
 pub struct PerfTimer {
     pub stats: PerfStats,
     enabled: bool,
@@ -97,7 +98,13 @@ impl PerfTimer {
     }
 
     /// Print performance breakdown using the tracing macro.
-    pub fn log_breakdown(&self, total_ms: f64, is_decode: bool, input_len: usize, context_len: usize) {
+    pub fn log_breakdown(
+        &self,
+        total_ms: f64,
+        is_decode: bool,
+        input_len: usize,
+        context_len: usize,
+    ) {
         if !self.enabled {
             return;
         }

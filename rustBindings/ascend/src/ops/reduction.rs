@@ -1,11 +1,10 @@
 //! Safe reduction wrappers (Softmax, ArgMax).
 
-use crate::error::{check_aclnn, Result};
+use crate::error::{Result, check_aclnn};
 use crate::memory::DeviceBuffer;
 use crate::stream::Stream;
 use crate::tensor::AclTensor;
 use aclnn_sys::common::AclOpExecutor;
-use std::os::raw::c_void;
 
 /// Softmax: out = softmax(x, dim).
 ///
@@ -16,8 +15,9 @@ use std::os::raw::c_void;
 /// - `out`: output tensor (must be pre-allocated, same shape as x)
 pub fn softmax(stream: &Stream, x: &AclTensor, dim: i64, out: &mut AclTensor) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
+    // Safety: Tensor handles are valid; `dim` is a valid i64 argument.
     check_aclnn(unsafe {
         aclnn_sys::reduction::aclnnSoftmaxGetWorkspaceSize(
             x.raw(),
@@ -37,8 +37,10 @@ pub fn softmax(stream: &Stream, x: &AclTensor, dim: i64, out: &mut AclTensor) ->
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
+    // Safety: `executor` was initialized by GetWorkspaceSize; `ws_ptr` is valid
+    // device memory (or null); `stream.raw()` is a valid stream handle.
     check_aclnn(unsafe {
         aclnn_sys::reduction::aclnnSoftmax(ws_ptr, workspace_size, executor, stream.raw())
     })
@@ -60,8 +62,9 @@ pub fn argmax(
     out: &mut AclTensor,
 ) -> Result<()> {
     let mut workspace_size: u64 = 0;
-    let mut executor: *mut AclOpExecutor = std::ptr::null_mut();
+    let mut executor: *mut AclOpExecutor = core::ptr::null_mut();
 
+    // Safety: Tensor handles are valid; `dim` and `keepdim` are valid args.
     check_aclnn(unsafe {
         aclnn_sys::reduction::aclnnArgMaxGetWorkspaceSize(
             x.raw(),
@@ -82,8 +85,9 @@ pub fn argmax(
     let ws_ptr = workspace
         .as_ref()
         .map(|b| b.ptr())
-        .unwrap_or(std::ptr::null_mut());
+        .unwrap_or(core::ptr::null_mut());
 
+    // Safety: Same pattern — `executor` from GetWorkspaceSize, valid pointers.
     check_aclnn(unsafe {
         aclnn_sys::reduction::aclnnArgMax(ws_ptr, workspace_size, executor, stream.raw())
     })
