@@ -13,3 +13,6 @@ ascendcl-sys = { path = "../ascendcl-sys" }
 [features]
 # Skip linking for CI / dev without CANN
 stub = ["ascendcl-sys/stub"]
+
+[lints]
+workspace = true

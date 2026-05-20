@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Auto-fix: reformat code and apply as many automatic lint fixes as possible.
+# Unlike `scripts/check`, this *modifies* files in place.
+#
+# This runs:
+#   1. cargo fmt --all          — reformat everything
+#   2. cargo clippy --fix ...   — apply auto-fixable clippy lints
+#   3. cargo fix ...            — apply compiler-suggested fixes
+#
+# It allows fixes even on dirty/staged working trees ("unsafe" / "experimental"
+# from a VCS perspective).  Review the diff before committing.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+fix_setup() {
+    local label="$1"
+    shift
+
+    echo "--- clippy --fix $label ---"
+    cargo clippy --fix --allow-dirty --allow-staged --no-deps "$@"
+
+    echo "--- cargo fix $label ---"
+    cargo fix --allow-dirty --allow-staged "$@"
+}
+
+# ── 1. Format ──────────────────────────────────────────────────────────────
+echo "--- fmt ---"
+cargo fmt --all
+
+# ── 2. Apply fixes across all feature combinations ─────────────────────────
+# Start with default/stub features (fastest), then full-feature builds.
+fix_setup "default (stub)" --workspace
+fix_setup "ascend + hccl" -p rust_llm_server --features "ascend,hccl"
+fix_setup "ascend crate stub" -p ascend --features stub
+
+# Re-run fmt after fixes, in case fix tools left formatting inconsistencies.
+echo "--- fmt (post-fix) ---"
+cargo fmt --all
+
+echo "All fixes applied. Run \`scripts/check\` to verify no regressions."

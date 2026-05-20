@@ -55,3 +55,6 @@ hccl = ["dep:hccl-sys", "ascend/hccl"]
 pool_depth_2 = []
 pool_depth_3 = []
 pool_depth_4 = []
+
+[lints]
+workspace = true

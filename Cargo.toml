@@ -8,3 +8,52 @@ members = [
     "rustBindings/aclnn-sys",
     "rustBindings/hccl-sys",
 ]
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_unsafe_on_extern = "deny"
+rust_2024_compatibility = "warn"
+unused_crate_dependencies = "warn"
+unreachable_pub = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_import_braces = "warn"
+elided_lifetimes_in_paths = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo_common_metadata = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+
+# Safety
+undocumented_unsafe_blocks = "deny"
+
+# Debug artifacts
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+# Numeric casts
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+cast_precision_loss = "warn"
+cast_lossless = "warn"
+
+# Match exhaustiveness
+wildcard_enum_match_arm = "warn"
+
+# Edition 2024 specific
+large_stack_frames = "warn"
+std_instead_of_core = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "warn"
