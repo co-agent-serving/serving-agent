@@ -94,6 +94,23 @@ impl Qwen3Config {
         }
     }
 
+    /// Default Qwen3-14B configuration.
+    pub fn qwen3_14b() -> Self {
+        Self {
+            hidden_size: 5120,
+            intermediate_size: 17408,
+            num_hidden_layers: 40,
+            num_attention_heads: 40,
+            num_key_value_heads: 8,
+            head_dim: 128,
+            vocab_size: 151936,
+            max_position_embeddings: 40960,
+            rms_norm_eps: 1e-6,
+            rope_theta: 1_000_000.0,
+            model_type: "qwen3".to_string(),
+        }
+    }
+
     /// Load configuration from a JSON file.
     pub fn from_json(path: &str) -> Result<Self, Box<dyn core::error::Error>> {
         let data = std::fs::read_to_string(path)?;
@@ -138,6 +155,19 @@ mod tests {
         let cfg2: Qwen3Config = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg.hidden_size, cfg2.hidden_size);
         assert_eq!(cfg.num_hidden_layers, cfg2.num_hidden_layers);
+    }
+
+    #[test]
+    fn test_qwen3_14b_config() {
+        let cfg = Qwen3Config::qwen3_14b();
+        assert_eq!(cfg.hidden_size, 5120);
+        assert_eq!(cfg.num_hidden_layers, 40);
+        assert_eq!(cfg.num_attention_heads, 40);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.vocab_size, 151936);
+        assert_eq!(cfg.num_queries_per_kv_group(), 5);
+        assert_eq!(cfg.intermediate_size, 17408);
     }
 
     #[test]
