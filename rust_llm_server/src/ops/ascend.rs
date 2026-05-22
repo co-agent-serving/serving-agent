@@ -86,12 +86,20 @@ pub struct AscendComputeOps {
 impl AscendComputeOps {
     /// Initialize the Ascend backend on the given device.
     ///
-    /// Reads `ASCEND_DEVICE_ID` env var if `device_id` is `None`.
+    /// Reads the following env vars (in priority order) if `device_id` is `None`:
+    ///  1. `TASK_DEVICE` (set by `task-submit --device auto`)
+    ///  2. `ASCEND_DEVICE_ID`
+    ///  3. Falls back to device 0.
     pub fn new(device_id: Option<i32>) -> Result<Self, ascend::AscendError> {
         let id = device_id.unwrap_or_else(|| {
-            std::env::var("ASCEND_DEVICE_ID")
+            std::env::var("TASK_DEVICE")
                 .ok()
                 .and_then(|s| s.parse().ok())
+                .or_else(|| {
+                    std::env::var("ASCEND_DEVICE_ID")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
                 .unwrap_or(0)
         });
         let device = Device::init(id)?;
