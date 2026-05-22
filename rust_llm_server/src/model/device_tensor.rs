@@ -12,7 +12,6 @@
 use super::tensor::DType;
 use std::fmt;
 
-#[cfg(feature = "ascend")]
 use ascend::DeviceBuffer;
 
 // ─── TensorMeta ────────────────────────────────────────────────────────
@@ -64,13 +63,11 @@ impl fmt::Display for TensorMeta {
 ///
 /// Used for intermediate results during the forward pass. Lifetime is
 /// typically a single decode step.
-#[cfg(feature = "ascend")]
 pub struct DeviceTensor {
     pub meta: TensorMeta,
     pub buf: DeviceBuffer,
 }
 
-#[cfg(feature = "ascend")]
 impl DeviceTensor {
     /// Create from an existing device buffer.
     pub fn from_buf(
@@ -152,15 +149,10 @@ impl DeviceTensor {
     /// Non-owning tensors come from `ScratchArena` and should NOT be
     /// pushed to the deferred-drop list.
     pub fn is_owned(&self) -> bool {
-        // DeviceBuffer exposes ownership via the `owned` field.
-        // We check by seeing if the buffer size > 0 and ptr is non-null
-        // but the buffer won't free on drop. The `owned` field is private
-        // in DeviceBuffer, so we expose it through a method.
         self.buf.is_owned()
     }
 }
 
-#[cfg(feature = "ascend")]
 impl fmt::Debug for DeviceTensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -171,7 +163,6 @@ impl fmt::Debug for DeviceTensor {
     }
 }
 
-#[cfg(feature = "ascend")]
 impl fmt::Display for DeviceTensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}[{:?}]", self.meta.name, self.meta.shape)
@@ -186,13 +177,11 @@ impl fmt::Display for DeviceTensor {
 /// model lifetime (loaded once, never freed until process exit).
 ///
 /// Separated from `DeviceTensor` to prevent accidental mutation of weights.
-#[cfg(feature = "ascend")]
 pub struct WeightTensor {
     pub meta: TensorMeta,
     pub buf: DeviceBuffer,
 }
 
-#[cfg(feature = "ascend")]
 impl WeightTensor {
     /// Create from an existing device buffer (used during weight upload).
     pub fn from_buf(
@@ -244,7 +233,6 @@ impl WeightTensor {
     }
 }
 
-#[cfg(feature = "ascend")]
 impl fmt::Debug for WeightTensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -255,7 +243,6 @@ impl fmt::Debug for WeightTensor {
     }
 }
 
-#[cfg(feature = "ascend")]
 impl fmt::Display for WeightTensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}[{:?}]", self.meta.name, self.meta.shape)
@@ -274,7 +261,6 @@ impl fmt::Display for WeightTensor {
 /// async operations reading from that memory. The deferred buffers are
 /// freed when the pool is dropped (after `sample_argmax` calls
 /// `stream.synchronize()`).
-#[cfg(feature = "ascend")]
 #[derive(Debug)]
 pub struct TensorPool {
     slots: Vec<Option<DeviceTensor>>,
@@ -283,7 +269,6 @@ pub struct TensorPool {
     _deferred: Vec<DeviceBuffer>,
 }
 
-#[cfg(feature = "ascend")]
 impl TensorPool {
     /// Create a new pool with `n` empty slots.
     pub fn new(num_slots: usize) -> Self {

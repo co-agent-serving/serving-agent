@@ -6,12 +6,11 @@
 //!
 //! Usage:
 //! ```bash
-//! TP_DEBUG_DUMP_DIR=/tmp/tp1_dump cargo run --features ascend -- ...
+//! TP_DEBUG_DUMP_DIR=/tmp/tp1_dump cargo run -- ...
 //! ```
 //!
 //! Then use `scripts/compare_tp_dumps.py` to diff TP=1 vs TP=2 outputs.
 
-#[cfg(feature = "ascend")]
 use crate::model::device_tensor::DeviceTensor;
 
 use std::collections::BTreeMap;
@@ -78,7 +77,6 @@ impl DebugDumper {
     ///
     /// Synchronizes the stream, copies data from device to host, and writes
     /// the raw bytes to `{dir}/{name}.bin`. Also records metadata.
-    #[cfg(feature = "ascend")]
     pub fn dump(&mut self, name: &str, tensor: &DeviceTensor, stream: &ascend::Stream) {
         let size = tensor.size_bytes();
         let mut host = vec![0u8; size];

@@ -27,15 +27,12 @@
 //! # POOL_DEPTH Compile-time Configuration
 //!
 //! ```bash
-//! cargo build --features ascend,pool_depth_2   # aggressive
-//! cargo build --features ascend,pool_depth_3   # moderate
-//! cargo build --features ascend                # default = 4 (safest)
+//! cargo build     # default = 4 (safest), used with pool_depth_N feature
 //! ```
 //!
 //! A special `POOL_DEPTH=1` is equivalent to per-layer-sync fallback:
 //! the arena is reset (after a sync) every single layer.
 
-#[cfg(feature = "ascend")]
 use ascend::DeviceBuffer;
 
 // ─── Compile-time POOL_DEPTH ───────────────────────────────────────────
@@ -80,7 +77,6 @@ pub const POOL_DEPTH: usize = 1;
 ///
 /// When the arena is `reset()`, both the allocation cursor and the
 /// deferred-owned list are cleared.
-#[cfg(feature = "ascend")]
 #[derive(Debug)]
 pub struct ScratchArena {
     /// Cached device buffers, grown lazily.
@@ -97,7 +93,6 @@ pub struct ScratchArena {
     last_layer: Option<usize>,
 }
 
-#[cfg(feature = "ascend")]
 impl ScratchArena {
     /// Create an empty arena (no device memory allocated yet).
     pub fn new() -> Self {
@@ -202,7 +197,6 @@ impl ScratchArena {
     }
 }
 
-#[cfg(feature = "ascend")]
 impl Default for ScratchArena {
     fn default() -> Self {
         Self::new()
@@ -221,13 +215,11 @@ impl Default for ScratchArena {
 ///
 /// Special case: `POOL_DEPTH == 1` means every layer resets and syncs
 /// (fallback to the old per-layer-sync behaviour).
-#[cfg(feature = "ascend")]
 #[derive(Debug)]
 pub struct RotatingPool {
     arenas: Vec<ScratchArena>,
 }
 
-#[cfg(feature = "ascend")]
 impl RotatingPool {
     /// Create a new rotating pool with `POOL_DEPTH` empty arenas.
     pub fn new() -> Self {
@@ -281,7 +273,6 @@ impl RotatingPool {
     }
 }
 
-#[cfg(feature = "ascend")]
 impl Default for RotatingPool {
     fn default() -> Self {
         Self::new()

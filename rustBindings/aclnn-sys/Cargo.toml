@@ -11,8 +11,6 @@ ascendcl-sys = { path = "../ascendcl-sys" }
 [build-dependencies]
 
 [features]
-# Skip linking for CI / dev without CANN
-stub = ["ascendcl-sys/stub"]
 
 [lints]
 workspace = true

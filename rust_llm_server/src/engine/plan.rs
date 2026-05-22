@@ -1,14 +1,11 @@
 use std::fmt;
-#[cfg(feature = "ascend")]
 use std::time::Instant;
 
 // ─── Cached environment variables (read once at process start) ─────────
 
-#[cfg(feature = "ascend")]
 pub(super) static PERF_BREAKDOWN: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("RUST_LLM_PERF_BREAKDOWN").is_ok_and(|v| v == "1"));
 
-#[cfg(feature = "ascend")]
 pub(super) static PERF_SKIP_STEPS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
     std::env::var("RUST_LLM_PERF_SKIP_STEPS")
         .ok()
@@ -16,11 +13,9 @@ pub(super) static PERF_SKIP_STEPS: std::sync::LazyLock<usize> = std::sync::LazyL
         .unwrap_or(5)
 });
 
-#[cfg(feature = "ascend")]
 static TP_HP_MATMUL: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("TP_HP_MATMUL").is_ok_and(|v| v == "1"));
 
-#[cfg(feature = "ascend")]
 static DUMP_DECODE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var("TP_DEBUG_DUMP_DECODE").is_ok_and(|v| v == "1"));
 
@@ -516,7 +511,6 @@ fn emit_matmul_or_dequant(
 /// Maps weight names like "model.layers.5.self_attn.q_proj.weight" to
 /// `Some((5, "02_q_proj"))`. Returns `None` for non-layer weights
 /// (embedding, final norm, lm_head).
-#[cfg(feature = "ascend")]
 fn dump_name_from_weight(name: &str) -> Option<(usize, &'static str)> {
     let rest = name.strip_prefix("model.layers.")?;
     let dot_pos = rest.find('.')?;
@@ -617,7 +611,6 @@ pub struct CompiledPlan {
 ///
 /// Passed to `execute_paged()` to enable the Attention step to branch
 /// between Prefill (full FlashAttention) and Decode (PagedAttention).
-#[cfg(feature = "ascend")]
 #[derive(Debug)]
 pub struct PagedKVContext {
     /// True if this is a decode step (seq_len=1 per sequence).
@@ -636,7 +629,6 @@ pub struct PagedKVContext {
     pub layer_idx: core::cell::Cell<usize>,
 }
 
-#[cfg(feature = "ascend")]
 struct ExecContext<'a, 'b> {
     ops: &'a crate::ops::ascend::AscendComputeOps,
     comm_ops: Option<&'a crate::ops::ascend_comm::AscendCommOps>,
@@ -661,7 +653,6 @@ struct ExecContext<'a, 'b> {
     hidden_size: usize,
 }
 
-#[cfg(feature = "ascend")]
 impl<'a, 'b> ExecContext<'a, 'b> {
     fn dump_name(&self, weight_idx: usize) -> Option<(usize, &'static str)> {
         dump_name_from_weight(self.weights[weight_idx].name())
@@ -1072,7 +1063,6 @@ impl CompiledPlan {
     ///
     /// The `paged_ctx` carries block_table, slot_mapping, and Prefill/Decode flag.
     /// The `kv_key_caches` / `kv_value_caches` are per-layer device buffers for paged KV.
-    #[cfg(feature = "ascend")]
     pub fn execute_paged(
         &self,
         ops: &crate::ops::ascend::AscendComputeOps,

@@ -29,11 +29,9 @@ echo "--- fmt ---"
 cargo fmt --all
 
 # ── 2. Apply fixes across all feature combinations ─────────────────────────
-# Start with default/stub features (fastest), then full-feature builds.
-fix_setup "default (stub)" --workspace
-fix_setup "ascend (no hccl)" -p rust_llm_server --features "ascend"
-fix_setup "ascend + hccl" -p rust_llm_server --features "ascend,hccl"
-fix_setup "ascend crate stub" -p ascend --features stub
+# Start with default features (fastest), then optional feature builds.
+fix_setup "default" --workspace
+fix_setup "simpler (PyPTO kernel dispatch)" -p rust_llm_server --features "simpler"
 
 # Re-run fmt after fixes, in case fix tools left formatting inconsistencies.
 echo "--- fmt (post-fix) ---"

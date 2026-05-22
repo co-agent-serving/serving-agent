@@ -9,8 +9,6 @@ license = "Apache-2.0"
 # No bindgen — we use manual extern "C" declarations
 
 [features]
-# Enable to skip linking (for CI / dev machines without CANN)
-stub = []
 
 [lints]
 workspace = true

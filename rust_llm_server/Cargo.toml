@@ -36,19 +36,17 @@ tokenizers = "0.21"
 tokio-stream = "0.1"
 futures-core = "0.3"
 
-# Ascend NPU backend (optional — requires CANN SDK)
-ascend = { path = "../rustBindings/ascend", optional = true }
-ascendcl-sys = { path = "../rustBindings/ascendcl-sys", optional = true }
-aclnn-sys = { path = "../rustBindings/aclnn-sys", optional = true }
-hccl-sys = { path = "../rustBindings/hccl-sys", optional = true }
+# Ascend NPU backend (CANN SDK required — always compiled)
+ascend = { path = "../rustBindings/ascend" }
+ascendcl-sys = { path = "../rustBindings/ascendcl-sys" }
+aclnn-sys = { path = "../rustBindings/aclnn-sys" }
+hccl-sys = { path = "../rustBindings/hccl-sys" }
 
 # KV Cache management (paged attention, prefix caching)
 kv-cache = { path = "../kv-cache" }
 
 [features]
 default = []
-ascend = ["dep:ascend", "dep:ascendcl-sys", "dep:aclnn-sys"]
-hccl = ["dep:hccl-sys", "ascend/hccl"]
 # Rotating scratch-arena pool depth (see model/scratch_arena.rs).
 # Default (no flag) = 1 (per-layer sync, safe fallback = old behaviour).
 # Set pool_depth_2/3/4 to enable rotating pool with fewer syncs.
@@ -58,7 +56,6 @@ pool_depth_4 = []
 
 [[example]]
 name = "hccl_smoke_test"
-required-features = ["ascend", "hccl"]
 
 [lints]
 workspace = true

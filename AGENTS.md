@@ -27,6 +27,17 @@ rust_llm_server/src/
 └── distributed/          DistributedConfig, process group init
 ```
 
+## Feature Flags
+
+The project uses a simplified feature model:
+
+| Feature | Purpose | Default |
+|---------|---------|:------:|
+| `pool_depth_N` (2/3/4) | Compile-time scratch arena pool depth | No (depth=1) |
+
+**CANN SDK is always required** for compilation (`ASCEND_HOME_PATH` must be set).
+NPU hardware is optional at runtime: use `--backend stub` for CPU-only testing.
+
 ## Device ID Convention
 
 The project has a strict three-layer rule for NPU device IDs:
@@ -44,31 +55,16 @@ The canonical launcher is `task-submit --device auto`, which sets `TASK_DEVICE`.
 
 ## Running One-Shot Generation
 
-No HTTP server, just generate and print. The `--backend` default is
-`"ascend"` when built with `--features ascend`, `"stub"` otherwise.
+No HTTP server, just generate and print. CANN is always compiled — no feature
+flags needed.
 
 ```bash
-# Stub backend (CPU, no NPU needed)
-# First, configure your model weights path:
-#   cp scripts/env.example scripts/env
-#   # Edit scripts/env and set MODEL_DIR to your weights directory
-#
-# Stub backend (CPU, no NPU needed):
-cargo run -- \
-  --weights /path/to/Qwen3-14B-weights \
-  --prompt 'Huawei is' \
-  --max-new-tokens 5 \
-  --backend stub
-
-# Ascend NPU (via task-submit with auto device detection)
-# --backend ascend is the default when --features ascend is used:
-# Preferred: use the wrapper script (reads MODEL_DIR from scripts/env)
+# Via task-submit (recommended):
 scripts/run-one-shot --prompt 'Huawei is' --max-new-tokens 5
 
-# Or directly via task-submit:
+# Or directly:
 task-submit --device auto --run \
-  "cd /path/to/serving_agent/rust_llm_server && \
-   cargo run --features ascend -- \
+  "cd $(pwd) && cargo run -- \
      --weights /path/to/Qwen3-14B-weights \
      --prompt 'Huawei is' \
      --max-new-tokens 5"
@@ -82,7 +78,7 @@ Tests and examples require `TASK_DEVICE` (set by `task-submit --device auto`) an
 ```bash
 task-submit --device auto --run \
   "cd /path/to/serving_agent/rust_llm_server && \
-   cargo run --features ascend -- \
+   cargo run -- \
      --weights /path/to/Qwen3-14B-weights"
 ```
 

@@ -523,7 +523,6 @@ pub struct WeightLoadStats {
 
 // ─── Device Upload (Ascend-specific) ───────────────────────────────────
 
-#[cfg(feature = "ascend")]
 pub fn upload_weights_to_device(
     model: &mut Qwen3Model,
     stream: &ascend::Stream,

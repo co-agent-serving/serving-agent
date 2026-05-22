@@ -16,7 +16,6 @@
 //! The binary reads these env vars to determine its role in the distributed
 //! topology.
 
-#[cfg(all(feature = "ascend", feature = "hccl"))]
 pub mod process_group;
 
 use crate::model::parallel::ParallelConfig;

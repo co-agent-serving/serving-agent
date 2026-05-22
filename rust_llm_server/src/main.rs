@@ -15,15 +15,12 @@ use rust_llm_server::model::network::Qwen3Model;
 use rust_llm_server::model::parallel::ParallelConfig;
 use rust_llm_server::model::quantize::QuantConfig;
 use rust_llm_server::model::weights::{self, SafetensorsLoader};
+use rust_llm_server::ops::ascend::AscendComputeOps;
+use rust_llm_server::ops::ascend_comm::AscendCommOps;
 use rust_llm_server::scheduler::Qwen3Tokenizer;
 use rust_llm_server::server::{AppState, serve};
 
-#[cfg(all(feature = "ascend", feature = "hccl"))]
 use rust_llm_server::distributed::process_group;
-#[cfg(feature = "ascend")]
-use rust_llm_server::ops::ascend::AscendComputeOps;
-#[cfg(all(feature = "ascend", feature = "hccl"))]
-use rust_llm_server::ops::ascend_comm::AscendCommOps;
 
 /// Rust LLM inference server for Qwen3 models.
 #[derive(Parser, Debug)]
@@ -67,9 +64,8 @@ struct Cli {
     quant: String,
 
     /// Backend: "stub" (no-op) or "ascend" (Ascend NPU via CANN).
-    /// Defaults to "ascend" when built with --features ascend, "stub" otherwise.
-    #[cfg_attr(not(feature = "ascend"), arg(long, default_value = "stub"))]
-    #[cfg_attr(feature = "ascend", arg(long, default_value = "ascend"))]
+    /// Defaults to "ascend".
+    #[arg(long, default_value = "ascend")]
     backend: String,
 
     /// Ascend NPU device ID (only used with --backend ascend).
@@ -115,7 +111,6 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
     let cli = Cli::parse();
 
     // Load or create config
-    // Priority: --config > auto-detect from --weights dir > hardcoded defaults
     let config = if let Some(config_path) = &cli.config {
         tracing::info!("Loading config from {config_path}");
         Qwen3Config::from_json(config_path)?
@@ -220,64 +215,56 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
         }
     };
 
-    // Select backend — for Ascend, create AscendComputeOps once here and reuse it
-    // below for Engine::new_ascend(). OpsBundle::ascend() would create a second
-    // Device::init() call which CANN rejects (error 507033: aclrtSetDevice twice).
-    #[cfg(feature = "ascend")]
-    let ascend_ops_init: Option<AscendComputeOps> = if cli.backend == "ascend" {
-        // Resolve device ID (highest priority first):
-        //   1. --device-id / --device CLI arg
-        //   2. LOCAL_RANK from distributed config
-        //   3. TASK_DEVICE env var (set by task-submit --device auto)
-        //   4. ASCEND_DEVICE_ID env var
-        //   5. Error: no device specified
-        let device_id = if let Some(id) = cli.device_id {
-            tracing::info!("Using device {} (from --device-id CLI arg)", id);
-            id
-        } else if let Some(ref dist) = distributed {
-            let id = dist.device_id();
-            tracing::info!("Using device {} (from LOCAL_RANK / distributed config)", id);
-            id
-        } else if let Ok(val) = std::env::var("TASK_DEVICE") {
-            let id = val
-                .parse::<i32>()
-                .expect("TASK_DEVICE must be a valid integer");
-            tracing::info!("Using device {} (from TASK_DEVICE env var)", id);
-            id
-        } else if let Ok(val) = std::env::var("ASCEND_DEVICE_ID") {
-            let id = val
-                .parse::<i32>()
-                .expect("ASCEND_DEVICE_ID must be a valid integer");
-            tracing::info!("Using device {} (from ASCEND_DEVICE_ID env var)", id);
-            id
-        } else {
-            return Err(("No NPU device specified. Use --device-id N, --device N, "
-                .to_string()
-                + "or set TASK_DEVICE or ASCEND_DEVICE_ID environment variables.")
-                .into());
-        };
+    // Select backend — pure runtime switch, no #[cfg] tricks.
+    let ascend_ops_init: Option<AscendComputeOps> = match cli.backend.as_str() {
+        "stub" => {
+            tracing::info!("Using STUB backend (no-op operators)");
+            None
+        }
+        "ascend" => {
+            // Resolve device ID (highest priority first):
+            //   1. --device-id / --device CLI arg
+            //   2. LOCAL_RANK from distributed config
+            //   3. TASK_DEVICE env var (set by task-submit --device auto)
+            //   4. ASCEND_DEVICE_ID env var
+            //   5. Error: no device specified
+            let device_id = if let Some(id) = cli.device_id {
+                tracing::info!("Using device {} (from --device-id CLI arg)", id);
+                id
+            } else if let Some(ref dist) = distributed {
+                let id = dist.device_id();
+                tracing::info!("Using device {} (from LOCAL_RANK / distributed config)", id);
+                id
+            } else if let Ok(val) = std::env::var("TASK_DEVICE") {
+                let id = val
+                    .parse::<i32>()
+                    .expect("TASK_DEVICE must be a valid integer");
+                tracing::info!("Using device {} (from TASK_DEVICE env var)", id);
+                id
+            } else if let Ok(val) = std::env::var("ASCEND_DEVICE_ID") {
+                let id = val
+                    .parse::<i32>()
+                    .expect("ASCEND_DEVICE_ID must be a valid integer");
+                tracing::info!("Using device {} (from ASCEND_DEVICE_ID env var)", id);
+                id
+            } else {
+                return Err(("No NPU device specified. Use --device-id N, --device N, "
+                    .to_string()
+                    + "or set TASK_DEVICE or ASCEND_DEVICE_ID environment variables.")
+                    .into());
+            };
 
-        tracing::info!("Using ASCEND NPU backend");
-        let ops = AscendComputeOps::new(device_id)
-            .map_err(|e| format!("Failed to init Ascend backend: {}", e))?;
-        Some(ops)
-    } else {
-        None
+            tracing::info!("Using ASCEND NPU backend");
+            let ops = AscendComputeOps::new(device_id)
+                .map_err(|e| format!("Failed to init Ascend backend: {}", e))?;
+            Some(ops)
+        }
+        other => return Err(format!("Unknown backend: {other}. Use stub or ascend.").into()),
     };
 
     let backend_label = match cli.backend.as_str() {
-        "stub" => {
-            tracing::info!("Using STUB backend (no-op operators)");
-            "STUB (no-op)"
-        }
-        #[cfg(feature = "ascend")]
+        "stub" => "STUB (no-op)",
         "ascend" => "ASCEND NPU (CANN)",
-        #[cfg(not(feature = "ascend"))]
-        "ascend" => {
-            return Err(
-                "Ascend backend requested but not compiled. Rebuild with: cargo build --features ascend".into()
-            );
-        }
         other => return Err(format!("Unknown backend: {other}. Use stub or ascend.").into()),
     };
 
@@ -308,32 +295,20 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
         }
 
         // Upload to device if using ascend backend
-        #[cfg(feature = "ascend")]
-        if cli.backend == "ascend" {
-            // Reuse the already-initialized stream from ascend_ops
-            if let Some(ref aops) = ascend_ops_init {
-                weights::upload_weights_to_device(&mut model, aops.stream())?;
-            }
+        if cli.backend == "ascend"
+            && let Some(ref aops) = ascend_ops_init
+        {
+            weights::upload_weights_to_device(&mut model, aops.stream())?;
         }
     } else {
         tracing::warn!("No --weights specified, running with uninitialized weights");
     }
 
     // Create engine with compiled execution plan.
-    // `mut` is only needed when `hccl` is enabled (for distributed init below).
-    #[cfg(feature = "ascend")]
-    #[cfg_attr(not(feature = "hccl"), allow(unused_mut))]
-    let mut engine = if let Some(ascend_ops) = ascend_ops_init {
-        Engine::new_ascend(model, ascend_ops, parallel.clone(), quant)
-    } else {
-        Engine::new(model, parallel.clone(), quant)
-    };
-    #[cfg(not(feature = "ascend"))]
-    let engine = Engine::new(model, parallel.clone(), quant);
+    let mut engine = Engine::new(model, ascend_ops_init, parallel.clone(), quant);
     tracing::info!("Engine: {}", engine.model_info());
 
     // Initialize HCCL communicators for distributed execution
-    #[cfg(all(feature = "ascend", feature = "hccl"))]
     if let Some(ref dist) = distributed
         && !dist.is_single()
         && cli.backend == "ascend"
@@ -432,14 +407,12 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
         //   1. Receives input_ids and positions via HcclBroadcast from rank 0
         //   2. Runs execute_paged() (which triggers HCCL AllReduce in lockstep with primary)
         //   3. Discards the output and repeats
-        // This is the vLLM worker_busy_loop pattern — NPU-level sync only, no CPU mutex.
         tracing::info!(
             "Worker rank (tp_rank={}, pp_rank={}): entering HCCL broadcast worker loop",
             parallel.tp_rank,
             parallel.pp_rank
         );
 
-        #[cfg(all(feature = "ascend", feature = "hccl"))]
         {
             // Take ownership of Engine out of the Arc<AppState>.
             // At this point exactly one Arc reference exists (no HTTP server started yet).
@@ -449,11 +422,6 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
             let engine = app_state.engine;
             let handle = std::thread::spawn(move || engine.run_worker_loop());
             handle.join().expect("Worker loop thread panicked");
-        }
-        #[cfg(not(all(feature = "ascend", feature = "hccl")))]
-        {
-            // Non-HCCL build: park the thread (no computation to mirror)
-            core::future::pending::<()>().await;
         }
         return Ok(());
     }

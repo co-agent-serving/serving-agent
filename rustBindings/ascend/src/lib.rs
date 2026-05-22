@@ -42,7 +42,6 @@ pub mod ops;
 pub mod stream;
 pub mod tensor;
 
-#[cfg(feature = "hccl")]
 pub mod comm;
 
 // Re-export key types

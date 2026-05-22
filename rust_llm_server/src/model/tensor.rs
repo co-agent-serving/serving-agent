@@ -51,7 +51,6 @@ pub struct Tensor {
 
     /// Device memory buffer (Ascend NPU).
     /// Held for RAII — memory is freed when the Tensor is dropped.
-    #[cfg(feature = "ascend")]
     pub device_buf: Option<ascend::DeviceBuffer>,
 
     /// Human-readable name for debugging.
@@ -66,7 +65,6 @@ impl Tensor {
             dtype,
             data_ptr: None,
             host_data: None,
-            #[cfg(feature = "ascend")]
             device_buf: None,
             name: name.into(),
         }
@@ -106,7 +104,6 @@ impl Tensor {
             dtype: self.dtype,
             data_ptr: None,
             host_data: None,
-            #[cfg(feature = "ascend")]
             device_buf: None,
             name: name.into(),
         }
@@ -127,7 +124,6 @@ impl Clone for Tensor {
             dtype: self.dtype,
             data_ptr: self.data_ptr,
             host_data: self.host_data.clone(),
-            #[cfg(feature = "ascend")]
             device_buf: None, // DeviceBuffer is not cloneable
             name: self.name.clone(),
         }
