@@ -3,3 +3,9 @@ target/
 
 # Per-crate Cargo.lock files — workspace root Cargo.lock is the single source of truth
 Cargo.lock
+
+# Developer-local config (not committed)
+scripts/env
+
+# Compiled kernel artifacts (.bin, manifest.json, report/)
+kernels/

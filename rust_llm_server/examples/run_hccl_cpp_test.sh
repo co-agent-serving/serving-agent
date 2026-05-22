@@ -11,11 +11,6 @@ if [ -z "$ASCEND_HOME_PATH" ]; then
         export ASCEND_HOME_PATH=$ASCEND_TOOLKIT_HOME
     elif [ -d "/usr/local/Ascend/ascend-toolkit/latest" ]; then
         export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
-    elif [ -d "$HOME/workspace/cann" ]; then
-        # Check if they have a local workspace build
-        export ASCEND_HOME_PATH=$HOME/workspace/cann/runtime
-        export HCCL_INC=$HOME/workspace/cann/hcomm/include
-        export ACL_INC=$HOME/workspace/cann/runtime/include/external
     else
         echo "Error: ASCEND_HOME_PATH is not set. Please source the Ascend environment setup script (e.g. source /usr/local/Ascend/ascend-toolkit/set_env.sh)"
         exit 1

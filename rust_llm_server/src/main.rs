@@ -74,7 +74,8 @@ struct Cli {
 
     /// Ascend NPU device ID (only used with --backend ascend).
     /// If not specified, reads TASK_DEVICE, then ASCEND_DEVICE_ID env vars (default: 0).
-    #[arg(long)]
+    /// Accepts --device (passed by task-submit) as an alias for --device-id.
+    #[arg(long, alias = "device")]
     device_id: Option<i32>,
 
     /// Path to model weights directory (containing *.safetensors files).
