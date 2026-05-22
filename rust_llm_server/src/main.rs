@@ -9,6 +9,7 @@ use std::sync::Arc;
 use clap::Parser;
 use rust_llm_server::distributed::DistributedConfig;
 use rust_llm_server::engine::engine::Engine;
+use rust_llm_server::engine::engine::GenerationConfig;
 use rust_llm_server::model::config::Qwen3Config;
 use rust_llm_server::model::network::Qwen3Model;
 use rust_llm_server::model::parallel::ParallelConfig;
@@ -66,12 +67,13 @@ struct Cli {
     quant: String,
 
     /// Backend: "stub" (no-op) or "ascend" (Ascend NPU via CANN).
-    /// The "ascend" backend requires building with --features ascend.
-    #[arg(long, default_value = "stub")]
+    /// Defaults to "ascend" when built with --features ascend, "stub" otherwise.
+    #[cfg_attr(not(feature = "ascend"), arg(long, default_value = "stub"))]
+    #[cfg_attr(feature = "ascend", arg(long, default_value = "ascend"))]
     backend: String,
 
     /// Ascend NPU device ID (only used with --backend ascend).
-    /// If not specified, reads ASCEND_DEVICE_ID env var (default: 0).
+    /// If not specified, reads TASK_DEVICE, then ASCEND_DEVICE_ID env vars (default: 0).
     #[arg(long)]
     device_id: Option<i32>,
 
@@ -79,6 +81,15 @@ struct Cli {
     /// If not specified, the server runs with uninitialized weights (shape-only).
     #[arg(long)]
     weights: Option<String>,
+
+    /// One-shot generation: prompt text (no HTTP server, just generate and print).
+    /// Use with --weights and optionally --model / --config.
+    #[arg(long)]
+    prompt: Option<String>,
+
+    /// Maximum new tokens for one-shot generation (default: 128).
+    #[arg(long, default_value_t = 128)]
+    max_new_tokens: usize,
 }
 
 #[tokio::main]
@@ -123,10 +134,12 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
                 "0.6b" => Qwen3Config::qwen3_0_6b(),
                 "4b" => Qwen3Config::qwen3_4b(),
                 "8b" => Qwen3Config::qwen3_8b(),
+                "14b" => Qwen3Config::qwen3_14b(),
                 other => {
-                    return Err(
-                        format!("Unknown model variant: {other}. Use 0.6b, 4b, or 8b.").into(),
-                    );
+                    return Err(format!(
+                        "Unknown model variant: {other}. Use 0.6b, 4b, 8b, or 14b."
+                    )
+                    .into());
                 }
             }
         }
@@ -144,8 +157,14 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
                 tracing::info!("Using Qwen3-8B default config");
                 Qwen3Config::qwen3_8b()
             }
+            "14b" => {
+                tracing::info!("Using Qwen3-14B default config");
+                Qwen3Config::qwen3_14b()
+            }
             other => {
-                return Err(format!("Unknown model variant: {other}. Use 0.6b, 4b, or 8b.").into());
+                return Err(
+                    format!("Unknown model variant: {other}. Use 0.6b, 4b, 8b, or 14b.").into(),
+                );
             }
         }
     };
@@ -306,7 +325,7 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
         tracing::info!("HCCL communicators initialized for distributed execution");
     }
 
-    // Load tokenizer from weights directory
+    // Load tokenizer from weights directory (shared by one-shot and HTTP modes)
     let tokenizer = if let Some(ref weights_dir) = cli.weights {
         let tokenizer_path = std::path::Path::new(weights_dir).join("tokenizer.json");
         tracing::info!("Loading tokenizer from: {}", tokenizer_path.display());
@@ -315,6 +334,43 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
     } else {
         return Err("--weights is required to load tokenizer.json".into());
     };
+
+    // ─── One-shot generation mode ──────────────────────────────────────
+    // If --prompt is provided, run a single generation and print the result,
+    // then exit. No HTTP server is started in this mode.
+    if let Some(prompt_text) = &cli.prompt {
+        tracing::info!(
+            "One-shot generation: prompt={:?}, max_new_tokens={}",
+            prompt_text,
+            cli.max_new_tokens
+        );
+
+        let gen_config = GenerationConfig {
+            max_new_tokens: cli.max_new_tokens,
+            ..Default::default()
+        };
+
+        let prompt_ids = tokenizer.encode(prompt_text);
+        if prompt_ids.is_empty() {
+            return Err("Empty prompt after tokenization".into());
+        }
+        tracing::info!("Prompt tokens: {}", prompt_ids.len());
+
+        let result = engine.generate(&prompt_ids, &gen_config);
+
+        let text = tokenizer.decode(&result.token_ids);
+        let output = serde_json::json!({
+            "prompt": prompt_text,
+            "generated": text,
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "ttft_ms": result.ttft_ms,
+            "tpot_ms": result.tpot_ms,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+
+        return Ok(());
+    }
 
     // Create app state
     let state = Arc::new(AppState { engine, tokenizer });
