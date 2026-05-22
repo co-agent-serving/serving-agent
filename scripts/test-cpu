@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run all CPU unit tests (no NPU hardware needed).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+cargo test --workspace "$@"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run CANN operator integration tests on NPU hardware.
+# Only runs npu_ops — no CPU tests, no simpler tests (they need --features simpler).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+task-submit --device auto --run \
+  "cd $(pwd) && cargo test --workspace --test 'npu_ops' -- --nocapture"

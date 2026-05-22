@@ -12,9 +12,7 @@ if [ ! -d "$MODEL_DIR" ]; then
     exit 1
 fi
 
-cargo build --features ascend --bin rust_llm_server
-
 task-submit --device auto --run \
-  "$(pwd)/target/debug/rust_llm_server \
+  "cd $(pwd) && cargo run --bin rust_llm_server -- \
      --weights '$MODEL_DIR' \
      --prompt '$PROMPT'"

@@ -1,44 +1,40 @@
-//! Integration tests for the `ascend` crate.
+//! NPU integration tests for CANN operators (device, memory, tensor, matmul, rmsnorm).
 //!
-//! These tests require real Ascend NPU hardware and CANN SDK.
-//! They are gated by the `ASCEND_DEVICE_ID` environment variable.
+//! These tests require real Ascend NPU hardware. They skip silently via
+//! `require_device()` when `TASK_DEVICE` is not set.
 //!
 //! # Running
 //! ```bash
-//! # Use device 0 (default)
-//! ASCEND_DEVICE_ID=0 cargo test --test integration
-//!
-//! # Use a specific device
-//! ASCEND_DEVICE_ID=2 cargo test --test integration
-//!
-//! # Skip hardware tests (default without env var — tests will be skipped)
-//! cargo test --test integration
+//! cargo test --workspace                         # skips silently on CPU
+//! scripts/test-npu                               # runs on NPU via task-submit
 //! ```
 
-// Allow eprintln! for debugging in tests, and silence unused deps brought in
-// by the test runner but not explicitly used here.
+// Allow eprintln! for debugging in tests.
 #![allow(clippy::print_stderr)]
 
 use aclnn_sys::common::AclDataType;
 use ascend::{AclTensor, Device, DeviceBuffer, Stream};
 
-use ascendcl_sys as _;
-use thiserror as _;
+// Suppress unused_crate_dependencies for transitive deps inherited from the
+// rust_llm_server crate. This test only uses ascend + aclnn_sys.
+use {
+    ascendcl_sys as _, axum as _, bytemuck as _, clap as _, futures_core as _, half as _,
+    hccl_sys as _, kv_cache as _, memmap2 as _, rust_llm_server as _, safetensors as _, serde as _,
+    serde_json as _, tokenizers as _, tokio as _, tokio_stream as _, tracing as _,
+    tracing_subscriber as _,
+};
 
-/// Helper: skip test if ASCEND_DEVICE_ID is not set.
-/// Returns the device guard if hardware is available.
+/// Helper: skip test if TASK_DEVICE is not set or device init fails.
+/// Returns the device guard if NPU hardware is available.
 fn require_device() -> Option<Device> {
-    if std::env::var("ASCEND_DEVICE_ID").is_err() {
-        eprintln!("SKIP: ASCEND_DEVICE_ID not set, skipping hardware test");
-        return None;
-    }
-    match Device::from_env() {
+    let device_id = std::env::var("TASK_DEVICE").ok()?.parse::<i32>().ok()?;
+    match Device::init(device_id) {
         Ok(dev) => {
             eprintln!("Using Ascend device {}", dev.id());
             Some(dev)
         }
         Err(e) => {
-            eprintln!("SKIP: Failed to init device: {}", e);
+            eprintln!("SKIP: Failed to init device {}: {}", device_id, e);
             None
         }
     }
@@ -50,11 +46,11 @@ fn require_device() -> Option<Device> {
 fn test_device_init_and_info() {
     let Some(dev) = require_device() else { return };
 
-    // Device ID should match what we requested
-    let expected_id: i32 = std::env::var("ASCEND_DEVICE_ID")
-        .unwrap_or("0".to_string())
+    // Device ID should match TASK_DEVICE
+    let expected_id: i32 = std::env::var("TASK_DEVICE")
+        .expect("TASK_DEVICE")
         .parse()
-        .unwrap_or(0);
+        .expect("i32");
     assert_eq!(dev.id(), expected_id);
 
     // Device count should be >= 1

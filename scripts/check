@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run all lints for the serving agent.
-# Feature-gate strategy: default (stub, no NPU) vs --features ascend (incl. PyPTO binding).
+# CI matrix: default (CANN always linked) vs --features simpler (PyPTO kernel dispatch).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -26,9 +26,6 @@ check_setup() {
 echo "--- fmt ---"
 cargo fmt --all --check
 
-check_setup "default (stub)" --workspace
-check_setup "ascend (no hccl)" -p rust_llm_server --features "ascend"
-check_setup "ascend + hccl" -p rust_llm_server --features "ascend,hccl"
-check_setup "ascend crate stub" -p ascend --features stub
+check_setup "default (CANN always linked)" --workspace
 
 echo "All checks passed."

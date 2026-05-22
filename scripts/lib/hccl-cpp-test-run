@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Inner helper for scripts/hccl-cpp-test — runs inside task-submit with 2 devices.
+# Reads TASK_DEVICE (comma-separated, e.g. "5,7") to get the two device IDs.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+DEV0=$(echo "$TASK_DEVICE" | cut -d, -f1)
+DEV1=$(echo "$TASK_DEVICE" | cut -d, -f2)
+
+# Try to find CANN installation path if not specified
+if [ -z "${ASCEND_HOME_PATH:-}" ]; then
+    if [ -n "${ASCEND_TOOLKIT_HOME:-}" ]; then
+        export ASCEND_HOME_PATH=$ASCEND_TOOLKIT_HOME
+    elif [ -d "/usr/local/Ascend/ascend-toolkit/latest" ]; then
+        export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest
+    else
+        echo "Error: ASCEND_HOME_PATH is not set. Source the Ascend environment setup script." >&2
+        exit 1
+    fi
+fi
+
+HCCL_INC="${HCCL_INC:-$ASCEND_HOME_PATH/include}"
+ACL_INC="${ACL_INC:-$ASCEND_HOME_PATH/include}"
+
+echo "=== Compiling C++ HCCL test ==="
+g++ -o /tmp/hccl_cpp_test rust_llm_server/examples/hccl_cpp_test.cpp \
+    -I"$ACL_INC" -I"$HCCL_INC" \
+    -L"$ASCEND_HOME_PATH/lib64" \
+    -lascendcl -lhccl -lstdc++
+
+echo "=== Launching rank 0 (device $DEV0) and rank 1 (device $DEV1) ==="
+
+TASK_DEVICE=$DEV0 /tmp/hccl_cpp_test --rank 0 --nranks 2 &
+PID0=$!
+
+sleep 0.5
+
+TASK_DEVICE=$DEV1 /tmp/hccl_cpp_test --rank 1 --nranks 2 &
+PID1=$!
+
+wait $PID0
+STATUS0=$?
+wait $PID1
+STATUS1=$?
+
+echo ""
+if [ $STATUS0 -eq 0 ] && [ $STATUS1 -eq 0 ]; then
+    echo "✅ C++ HCCL test PASSED"
+else
+    echo "❌ C++ HCCL test FAILED (rank0=$STATUS0, rank1=$STATUS1)"
+fi
+exit $((STATUS0 | STATUS1))

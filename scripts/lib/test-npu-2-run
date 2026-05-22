@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Inner helper for scripts/hccl-smoke — runs inside task-submit with 2 devices.
+# Reads TASK_DEVICE (comma-separated, e.g. "5,7") to get the two device IDs.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+DEV0=$(echo "$TASK_DEVICE" | cut -d, -f1)
+DEV1=$(echo "$TASK_DEVICE" | cut -d, -f2)
+
+echo "=== Building HCCL smoke test ==="
+cargo build --example hccl_smoke_test
+
+echo "=== Launching rank 0 (device $DEV0) and rank 1 (device $DEV1) ==="
+
+TASK_DEVICE=$DEV0 ./target/debug/examples/hccl_smoke_test --rank 0 --nranks 2 &
+PID0=$!
+
+sleep 0.5
+
+TASK_DEVICE=$DEV1 ./target/debug/examples/hccl_smoke_test --rank 1 --nranks 2 &
+PID1=$!
+
+wait $PID0
+STATUS0=$?
+wait $PID1
+STATUS1=$?
+
+echo ""
+if [ $STATUS0 -eq 0 ] && [ $STATUS1 -eq 0 ]; then
+    echo "✅ HCCL smoke test PASSED"
+else
+    echo "❌ HCCL smoke test FAILED (rank0=$STATUS0, rank1=$STATUS1)"
+fi
+exit $((STATUS0 | STATUS1))

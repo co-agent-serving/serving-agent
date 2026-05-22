@@ -45,6 +45,10 @@ hccl-sys = { path = "../rustBindings/hccl-sys" }
 # KV Cache management (paged attention, prefix caching)
 kv-cache = { path = "../kv-cache" }
 
+[dev-dependencies]
+# Safe, zero-cost transmutes for test data
+bytemuck = "1"
+
 [features]
 default = []
 # Rotating scratch-arena pool depth (see model/scratch_arena.rs).

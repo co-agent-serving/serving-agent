@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Compile and run the HCCL C++ test with 2 ranks on 2 NPUs.
+# Always runs via task-submit (auto-allocates 2 devices).
+# The actual multi-rank launch is delegated to scripts/lib/hccl-cpp-test-run.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+task-submit --device auto --device-num 2 --run \
+  "cd $(pwd) && bash scripts/lib/hccl-cpp-test-run"

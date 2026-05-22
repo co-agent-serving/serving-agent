@@ -9,6 +9,10 @@ use clap as _;
 use half as _;
 use tracing_subscriber as _;
 
+// Suppress dev-dependencies that are visible in test builds.
+#[cfg(test)]
+use bytemuck as _;
+
 pub mod distributed;
 pub mod engine;
 pub mod model;
