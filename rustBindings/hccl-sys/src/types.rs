@@ -23,7 +23,11 @@ pub struct HcclRootInfo {
 }
 
 /// Size of `HcclRootInfo` in bytes.
-pub const HCCL_ROOT_INFO_BYTES: usize = 4120;
+///
+/// Must match the C header value from `hccl_types.h`. The CANN 9.0.0 header
+/// defines this as 4108. If this drifts from the actual CANN SDK version in
+/// use, regenerate via bindgen or update manually.
+pub const HCCL_ROOT_INFO_BYTES: usize = 4108;
 
 impl Default for HcclRootInfo {
     fn default() -> Self {
