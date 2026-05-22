@@ -73,7 +73,9 @@ struct Cli {
     backend: String,
 
     /// Ascend NPU device ID (only used with --backend ascend).
-    /// If not specified, reads TASK_DEVICE, then ASCEND_DEVICE_ID env vars (default: 0).
+    /// If not specified, the resolution chain is:
+    ///   --device-id > LOCAL_RANK (distributed) > TASK_DEVICE > ASCEND_DEVICE_ID
+    /// An error is emitted if none of the above are set.
     /// Accepts --device (passed by task-submit) as an alias for --device-id.
     #[arg(long, alias = "device")]
     device_id: Option<i32>,
@@ -223,10 +225,38 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Device::init() call which CANN rejects (error 507033: aclrtSetDevice twice).
     #[cfg(feature = "ascend")]
     let ascend_ops_init: Option<AscendComputeOps> = if cli.backend == "ascend" {
-        // --device-id takes priority; fall back to LOCAL_RANK from distributed config
-        let device_id = cli
-            .device_id
-            .or_else(|| distributed.as_ref().map(|d| d.device_id()));
+        // Resolve device ID (highest priority first):
+        //   1. --device-id / --device CLI arg
+        //   2. LOCAL_RANK from distributed config
+        //   3. TASK_DEVICE env var (set by task-submit --device auto)
+        //   4. ASCEND_DEVICE_ID env var
+        //   5. Error: no device specified
+        let device_id = if let Some(id) = cli.device_id {
+            tracing::info!("Using device {} (from --device-id CLI arg)", id);
+            id
+        } else if let Some(ref dist) = distributed {
+            let id = dist.device_id();
+            tracing::info!("Using device {} (from LOCAL_RANK / distributed config)", id);
+            id
+        } else if let Ok(val) = std::env::var("TASK_DEVICE") {
+            let id = val
+                .parse::<i32>()
+                .expect("TASK_DEVICE must be a valid integer");
+            tracing::info!("Using device {} (from TASK_DEVICE env var)", id);
+            id
+        } else if let Ok(val) = std::env::var("ASCEND_DEVICE_ID") {
+            let id = val
+                .parse::<i32>()
+                .expect("ASCEND_DEVICE_ID must be a valid integer");
+            tracing::info!("Using device {} (from ASCEND_DEVICE_ID env var)", id);
+            id
+        } else {
+            return Err(("No NPU device specified. Use --device-id N, --device N, "
+                .to_string()
+                + "or set TASK_DEVICE or ASCEND_DEVICE_ID environment variables.")
+                .into());
+        };
+
         tracing::info!("Using ASCEND NPU backend");
         let ops = AscendComputeOps::new(device_id)
             .map_err(|e| format!("Failed to init Ascend backend: {}", e))?;

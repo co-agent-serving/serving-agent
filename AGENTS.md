@@ -27,6 +27,21 @@ rust_llm_server/src/
 └── distributed/          DistributedConfig, process group init
 ```
 
+## Device ID Convention
+
+The project has a strict three-layer rule for NPU device IDs:
+
+| Layer | Rule | Example |
+|-------|------|---------|
+| **Libraries** (`ascend::Device`, `AscendComputeOps`) | Take `device_id: i32` — no `Option`, no env fallback, no defaults | `Device::init(device_id)` |
+| **Tests & Examples** | Require `TASK_DEVICE` env var — fail immediately via `expect` | `env::var("TASK_DEVICE").expect("TASK_DEVICE")` |
+| **Entrypoint** (`main.rs`) | Full resolution chain with logging, graceful error if unset | `--device-id` > `LOCAL_RANK` > `TASK_DEVICE` > `ASCEND_DEVICE_ID` > error |
+
+Tests never silently default to device 0. If `TASK_DEVICE` is missing, the test panics
+with a stack trace pointing to the exact `expect()` call.
+
+The canonical launcher is `task-submit --device auto`, which sets `TASK_DEVICE`.
+
 ## Running One-Shot Generation
 
 No HTTP server, just generate and print. The `--backend` default is
@@ -59,7 +74,8 @@ task-submit --device auto --run \
      --max-new-tokens 5"
 ```
 
-Device auto-detection chain: `--device-id` > `TASK_DEVICE` (set by `task-submit`) > `ASCEND_DEVICE_ID` > 0.
+Device resolution chain (main.rs entrypoint): `--device-id` > `LOCAL_RANK` (distributed) > `TASK_DEVICE` > `ASCEND_DEVICE_ID` > error.
+Tests and examples require `TASK_DEVICE` (set by `task-submit --device auto`) and fail immediately if absent.
 
 ## Running the HTTP Server
 

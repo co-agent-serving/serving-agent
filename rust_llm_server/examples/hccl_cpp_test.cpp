@@ -36,7 +36,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const char* dev_env = getenv("ASCEND_DEVICE_ID");
+    // Per convention: TASK_DEVICE (task-submit) > fallback
+    const char* dev_env = getenv("TASK_DEVICE");
     int dev_id = dev_env ? std::stoi(dev_env) : rank;
 
     std::cout << "[rank " << rank << "] Init ACL on device " << dev_id << std::endl;
@@ -73,7 +74,7 @@ int main(int argc, char** argv) {
     CHECK_HCCL(HcclCommInitRootInfo(nranks, &root_info, rank, &comm));
     std::cout << "[rank " << rank << "] Comm initialized" << std::endl;
 
-    if (rank == 0) remove(root_file);
+    // root_file left in /tmp for rank 1 to read; cleaned up on reboot.
 
     int count = 256;
     float* send_buf;

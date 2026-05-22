@@ -1,21 +1,25 @@
 //! Minimal HCCL smoke test — verifies that HcclBroadcast and HcclAllReduce
 //! actually work on this hardware.
 //!
-//! Run with 2 processes:
-//!   ASCEND_DEVICE_ID=0 cargo run --example hccl_smoke_test --features "ascend,hccl" -- --rank 0 --nranks 2
-//!   ASCEND_DEVICE_ID=1 cargo run --example hccl_smoke_test --features "ascend,hccl" -- --rank 1 --nranks 2
+//! Run via:
+//!   scripts/test-npu-2
 //!
-//! Or use the helper script (launches both):
-//!   bash examples/run_hccl_smoke_test.sh
+//! Or directly with task-submit:
+//!   task-submit --device auto --device-num 2 --run \
+//!     "TASK_DEVICE=0 ./target/... & TASK_DEVICE=1 ./target/... & wait"
 
-// Silence unused_crate_dependencies lint: this example inherits all deps of
-// rust_llm_server but only uses ascend, ascendcl-sys, and hccl-sys.
-#[cfg_attr(not(feature = "hccl"), allow(unused_imports))]
+// Allow println! for test progress output and silence unused_crate_dependencies
+// lint: this example inherits all deps of rust_llm_server but only uses a subset.
+#![allow(clippy::print_stdout, clippy::std_instead_of_core)]
 use {
-    aclnn_sys as _, axum as _, clap as _, futures_core as _, half as _, kv_cache as _,
-    memmap2 as _, rust_llm_server as _, safetensors as _, serde as _, serde_json as _,
-    tokenizers as _, tokio as _, tokio_stream as _, tracing as _, tracing_subscriber as _,
+    aclnn_sys as _, axum as _, bytemuck as _, clap as _, futures_core as _, half as _,
+    kv_cache as _, memmap2 as _, rust_llm_server as _, safetensors as _, serde as _,
+    serde_json as _, tokenizers as _, tokio as _, tokio_stream as _, tracing as _,
+    tracing_subscriber as _,
 };
+
+#[cfg(feature = "simpler")]
+use simpler_sys as _;
 
 use std::path::Path;
 use std::thread;
@@ -35,10 +39,10 @@ fn main() {
         .map(|i| args[i + 1].parse().unwrap())
         .unwrap_or(2);
 
-    let device_id = std::env::var("ASCEND_DEVICE_ID")
-        .ok()
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(rank as i32);
+    let device_id = std::env::var("TASK_DEVICE")
+        .expect("TASK_DEVICE")
+        .parse::<i32>()
+        .expect("i32");
 
     println!("[rank {rank}] HCCL smoke test: nranks={nranks}, device_id={device_id}");
 

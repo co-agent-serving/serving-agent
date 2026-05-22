@@ -86,23 +86,11 @@ pub struct AscendComputeOps {
 impl AscendComputeOps {
     /// Initialize the Ascend backend on the given device.
     ///
-    /// Reads the following env vars (in priority order) if `device_id` is `None`:
-    ///  1. `TASK_DEVICE` (set by `task-submit --device auto`)
-    ///  2. `ASCEND_DEVICE_ID`
-    ///  3. Falls back to device 0.
-    pub fn new(device_id: Option<i32>) -> Result<Self, ascend::AscendError> {
-        let id = device_id.unwrap_or_else(|| {
-            std::env::var("TASK_DEVICE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .or_else(|| {
-                    std::env::var("ASCEND_DEVICE_ID")
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                })
-                .unwrap_or(0)
-        });
-        let device = Device::init(id)?;
+    /// The caller is responsible for resolving the device ID from CLI args,
+    /// environment variables, or distributed configuration. This function
+    /// takes an explicit `device_id` and does not perform any fallback.
+    pub fn new(device_id: i32) -> Result<Self, ascend::AscendError> {
+        let device = Device::init(device_id)?;
         let stream = Stream::new()?;
 
         let (free, total) = device.memory_info().unwrap_or((0, 0));
@@ -120,7 +108,7 @@ impl AscendComputeOps {
         Ok(Self {
             device,
             stream,
-            device_id: id,
+            device_id,
             acl_context,
             rope_cos: std::sync::OnceLock::new(),
             rope_sin: std::sync::OnceLock::new(),
